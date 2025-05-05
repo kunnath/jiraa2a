@@ -42,6 +42,7 @@ jiraenv/
 # Environment files (but keeping the structure)
 .env
 .env.local
+.env.example
 
 # Logs
 logs/
