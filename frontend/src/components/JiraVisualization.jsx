@@ -158,6 +158,7 @@ const getLayoutedElements = (nodes, edges, direction = 'TB') => {
 // Register custom node types
 const nodeTypes = {
   central: CustomNode,
+  parent: CustomNode,  // Add parent node type
   requirement: CustomNode,
   test: CustomNode,
   defect: CustomNode,
@@ -246,9 +247,9 @@ const JiraVisualization = ({ data }) => {
   const [tabValue, setTabValue] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
   const [filteredNodes, setFilteredNodes] = useState([]);
-  const [selectedNodeTypes, setSelectedNodeTypes] = useState(['central', 'requirement', 'test', 'defect', 'related']);
+  const [selectedNodeTypes, setSelectedNodeTypes] = useState(['central', 'parent', 'requirement', 'test', 'defect', 'related']);
   const [layoutDirection, setLayoutDirection] = useState('TB'); // TB = top to bottom
-  const [issueStats, setIssueStats] = useState({ total: 0, requirements: 0, tests: 0, defects: 0, other: 0 });
+  const [issueStats, setIssueStats] = useState({ total: 0, parents: 0, requirements: 0, tests: 0, defects: 0, other: 0 });
   const [isExporting, setIsExporting] = useState(false);
   const [selectedNode, setSelectedNode] = useState(null);
   const [issueDetails, setIssueDetails] = useState(null);
@@ -286,12 +287,13 @@ const JiraVisualization = ({ data }) => {
       if (!node) return acc; // Skip null/undefined nodes
       
       acc.total++;
-      if (node.type === 'requirement') acc.requirements++;
+      if (node.type === 'parent') acc.parents++;
+      else if (node.type === 'requirement') acc.requirements++;
       else if (node.type === 'test') acc.tests++;
       else if (node.type === 'defect') acc.defects++;
       else if (node.type !== 'central') acc.other++;
       return acc;
-    }, { total: 0, requirements: 0, tests: 0, defects: 0, other: 0 });
+    }, { total: 0, parents: 0, requirements: 0, tests: 0, defects: 0, other: 0 });
     
     setIssueStats(stats);
     
@@ -687,18 +689,42 @@ const JiraVisualization = ({ data }) => {
     setDetailsJson('');
   }, []);
 
-  // Create chart data for the Analytics tab
+  // Store original stats for Analytics tab (not affected by filtering)
+  const [originalStats, setOriginalStats] = useState({ total: 0, parents: 0, requirements: 0, tests: 0, defects: 0, other: 0 });
+  
+  // Update original stats when data changes
+  useEffect(() => {
+    if (data && Array.isArray(data.nodes)) {
+      const stats = data.nodes.reduce((acc, node) => {
+        if (!node) return acc; // Skip null/undefined nodes
+        
+        acc.total++;
+        if (node.type === 'parent') acc.parents++;
+        else if (node.type === 'requirement') acc.requirements++;
+        else if (node.type === 'test') acc.tests++;
+        else if (node.type === 'defect') acc.defects++;
+        else if (node.type !== 'central') acc.other++;
+        return acc;
+      }, { total: 0, parents: 0, requirements: 0, tests: 0, defects: 0, other: 0 });
+      
+      setOriginalStats(stats);
+    }
+  }, [data]);
+  
+  // Create chart data for the Analytics tab - using originalStats to ensure all child items are shown
   const pieChartData = {
-    labels: ['Requirements', 'Tests', 'Defects', 'Other'],
+    labels: ['Parents', 'Requirements', 'Tests', 'Defects', 'Other'],
     datasets: [
       {
         data: [
-          issueStats.requirements,
-          issueStats.tests,
-          issueStats.defects,
-          issueStats.other
+          originalStats.parents || 0,
+          originalStats.requirements,
+          originalStats.tests,
+          originalStats.defects,
+          originalStats.other
         ],
         backgroundColor: [
+          '#9c27b0', // Purple for parents
           '#4dabf5', // Blue for requirements
           '#66bb6a', // Green for tests
           '#f44336', // Red for defects
@@ -710,15 +736,16 @@ const JiraVisualization = ({ data }) => {
   };
 
   const barChartData = {
-    labels: ['Requirements', 'Tests', 'Defects', 'Other'],
+    labels: ['Parents', 'Requirements', 'Tests', 'Defects', 'Other'],
     datasets: [
       {
         label: 'Issue Count',
         data: [
-          issueStats.requirements,
-          issueStats.tests,
-          issueStats.defects,
-          issueStats.other
+          originalStats.parents || 0,
+          originalStats.requirements,
+          originalStats.tests,
+          originalStats.defects,
+          originalStats.other
         ],
         backgroundColor: [
           '#4dabf5',
@@ -899,6 +926,15 @@ const JiraVisualization = ({ data }) => {
                   sx={{ cursor: 'pointer' }}
                 />
               </Tooltip>
+              <Tooltip title="Parent Issues">
+                <Chip
+                  icon={<AccountTreeIcon />}
+                  label={`Parents (${issueStats.parents || 0})`}
+                  color={selectedNodeTypes.includes('parent') ? 'primary' : 'default'}
+                  onClick={() => handleNodeTypeFilterChange('parent')}
+                  sx={{ cursor: 'pointer' }}
+                />
+              </Tooltip>
               <Tooltip title="Requirements">
                 <Chip
                   icon={<AssignmentIcon />}
@@ -1040,6 +1076,10 @@ const JiraVisualization = ({ data }) => {
                       <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
                         <Box sx={{ width: 16, height: 16, backgroundColor: '#ff9800', borderRadius: 1 }} />
                         <Typography variant="body2">Central Issue</Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                        <Box sx={{ width: 16, height: 16, backgroundColor: '#9c27b0', borderRadius: 1 }} />
+                        <Typography variant="body2">Parent Issue</Typography>
                       </Box>
                       <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
                         <Box sx={{ width: 16, height: 16, backgroundColor: '#4dabf5', borderRadius: 1 }} />
@@ -1363,23 +1403,27 @@ const JiraVisualization = ({ data }) => {
                     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                       <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                         <Typography variant="body1">Total Issues:</Typography>
-                        <Typography variant="body1" fontWeight="bold">{issueStats.total}</Typography>
+                        <Typography variant="body1" fontWeight="bold">{originalStats.total}</Typography>
+                      </Box>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <Typography variant="body1">Parents:</Typography>
+                        <Typography variant="body1" color="secondary">{originalStats.parents || 0}</Typography>
                       </Box>
                       <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                         <Typography variant="body1">Requirements:</Typography>
-                        <Typography variant="body1" color="primary">{issueStats.requirements}</Typography>
+                        <Typography variant="body1" color="primary">{originalStats.requirements}</Typography>
                       </Box>
                       <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                         <Typography variant="body1">Tests:</Typography>
-                        <Typography variant="body1" color="success.main">{issueStats.tests}</Typography>
+                        <Typography variant="body1" color="success.main">{originalStats.tests}</Typography>
                       </Box>
                       <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                         <Typography variant="body1">Defects:</Typography>
-                        <Typography variant="body1" color="error.main">{issueStats.defects}</Typography>
+                        <Typography variant="body1" color="error.main">{originalStats.defects}</Typography>
                       </Box>
                       <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
                         <Typography variant="body1">Other Issues:</Typography>
-                        <Typography variant="body1" color="text.secondary">{issueStats.other}</Typography>
+                        <Typography variant="body1" color="text.secondary">{originalStats.other}</Typography>
                       </Box>
                     </Box>
                   </CardContent>
@@ -1427,8 +1471,8 @@ const JiraVisualization = ({ data }) => {
                           <CardContent>
                             <Typography variant="subtitle2" color="text.secondary">Test Coverage Ratio</Typography>
                             <Typography variant="h5">
-                              {issueStats.requirements ? 
-                                `${((issueStats.tests / issueStats.requirements) * 100).toFixed(1)}%` : 
+                              {originalStats.requirements ? 
+                                `${((originalStats.tests / originalStats.requirements) * 100).toFixed(1)}%` : 
                                 'N/A'
                               }
                             </Typography>
@@ -1443,8 +1487,8 @@ const JiraVisualization = ({ data }) => {
                           <CardContent>
                             <Typography variant="subtitle2" color="text.secondary">Defect Rate</Typography>
                             <Typography variant="h5">
-                              {issueStats.tests ? 
-                                `${((issueStats.defects / issueStats.tests) * 100).toFixed(1)}%` : 
+                              {originalStats.tests ? 
+                                `${((originalStats.defects / originalStats.tests) * 100).toFixed(1)}%` : 
                                 'N/A'
                               }
                             </Typography>
@@ -1472,8 +1516,8 @@ const JiraVisualization = ({ data }) => {
                           <CardContent>
                             <Typography variant="subtitle2" color="text.secondary">Average Connections</Typography>
                             <Typography variant="h5">
-                              {issueStats.total ? 
-                                (edges.length / issueStats.total).toFixed(1) : 
+                              {originalStats.total ? 
+                                (edges.length / originalStats.total).toFixed(1) : 
                                 '0'
                               }
                             </Typography>

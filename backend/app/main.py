@@ -141,6 +141,66 @@ async def fetch_linked_issues(credentials: JiraCredentials, issue_data):
     
     return linked_issues
 
+async def fetch_parent_issue(credentials: JiraCredentials, issue_data):
+    """Extract and fetch parent issue from a JIRA issue"""
+    
+    # Validate input to avoid NoneType errors
+    if not issue_data or not isinstance(issue_data, dict):
+        return None
+    
+    # Check if the fields key exists
+    fields = issue_data.get("fields", {})
+    if not fields:
+        return None
+    
+    # Check for parent field - different JIRA instances might use different parent field names
+    # Common ones are "parent" or inside "customfield" with a key like "Epic Link"
+    parent_key = None
+    
+    # Check for standard parent field
+    if "parent" in fields and isinstance(fields["parent"], dict):
+        parent_key = fields["parent"].get("key")
+    
+    # If no standard parent field, check for Epic Link
+    elif "customfield_10014" in fields:  # Epic Link is often stored in this field
+        parent_key = fields.get("customfield_10014")
+    
+    # Check for any field that might contain "parent" in its name
+    else:
+        for field_name, field_value in fields.items():
+            if "parent" in field_name.lower() and field_value:
+                if isinstance(field_value, dict) and "key" in field_value:
+                    parent_key = field_value.get("key")
+                elif isinstance(field_value, str):
+                    parent_key = field_value
+                break
+    
+    if parent_key:
+        try:
+            parent_data = await fetch_issue(credentials, parent_key)
+            
+            # Safely get issue type
+            issue_type = "Unknown"
+            if parent_data and "fields" in parent_data:
+                if "issuetype" in parent_data["fields"]:
+                    issue_type = parent_data["fields"]["issuetype"].get("name", "Unknown")
+            
+            return {
+                "key": parent_key,
+                "data": parent_data,
+                "relationship": "is child of",  # The current issue is a child of the parent
+                "direction": "inward",  # Parent is inward from child
+                "issue_type": issue_type
+            }
+        except HTTPException as e:
+            print(f"Error fetching parent issue {parent_key}: {str(e)}")
+            return None
+        except Exception as e:
+            print(f"Unexpected error with parent issue {parent_key}: {str(e)}")
+            return None
+    
+    return None
+
 def process_issue_node(issue_data, node_type="central"):
     """Convert JIRA issue data to a node for visualization"""
     if not issue_data:
@@ -214,6 +274,46 @@ async def visualize_jira(credentials: JiraCredentials):
         nodes = [central_node]
         edges = []
         processed_issues = {central_issue.get("id"): True}
+        
+        # Check for parent issue
+        parent_issue = await fetch_parent_issue(credentials, central_issue)
+        
+        # Process parent issue if it exists
+        if parent_issue and parent_issue.get("data") and parent_issue["data"].get("id"):
+            parent_data = parent_issue.get("data", {})
+            parent_id = parent_data.get("id")
+            
+            # Only process if we haven't seen this issue before
+            if parent_id and parent_id not in processed_issues:
+                # Determine issue type category for parent
+                parent_type = parent_issue.get("issue_type", "").lower()
+                parent_type_category = "parent"  # New category for parent issues
+                
+                # Create parent node
+                parent_node = process_issue_node(parent_data, parent_type_category)
+                nodes.append(parent_node)
+                
+                # Create edge from child to parent
+                central_id = central_issue.get("id")
+                edges.append(process_edge(central_id, parent_id, "is child of"))
+                
+                processed_issues[parent_id] = True
+                
+                # Fetch parents of parent (grandparents) recursively up to 2 levels
+                grandparent_issue = await fetch_parent_issue(credentials, parent_data)
+                if grandparent_issue and grandparent_issue.get("data") and grandparent_issue["data"].get("id"):
+                    gparent_data = grandparent_issue.get("data", {})
+                    gparent_id = gparent_data.get("id")
+                    
+                    if gparent_id and gparent_id not in processed_issues:
+                        # Create grandparent node
+                        gparent_node = process_issue_node(gparent_data, "parent")
+                        nodes.append(gparent_node)
+                        
+                        # Create edge from parent to grandparent
+                        edges.append(process_edge(parent_id, gparent_id, "is child of"))
+                        
+                        processed_issues[gparent_id] = True
         
         # Fetch directly linked issues
         direct_links = await fetch_linked_issues(credentials, central_issue)

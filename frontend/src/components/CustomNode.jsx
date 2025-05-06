@@ -6,6 +6,7 @@ import AssignmentIcon from '@mui/icons-material/Assignment';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import HelpOutlineIcon from '@mui/icons-material/HelpOutline';
 import StarIcon from '@mui/icons-material/Star';
+import AccountTreeIcon from '@mui/icons-material/AccountTree';
 
 const CustomNode = ({ data, type }) => {
   // Set node color based on node type
@@ -13,6 +14,8 @@ const CustomNode = ({ data, type }) => {
     switch (type) {
       case 'central':
         return '#ff9800'; // Orange for central node
+      case 'parent':
+        return '#9c27b0'; // Purple for parent node
       case 'requirement':
         return '#4dabf5'; // Blue for requirements
       case 'test':
@@ -29,6 +32,8 @@ const CustomNode = ({ data, type }) => {
     switch (type) {
       case 'central':
         return <StarIcon fontSize="small" />;
+      case 'parent':
+        return <AccountTreeIcon fontSize="small" />;
       case 'requirement':
         return <AssignmentIcon fontSize="small" />;
       case 'test':
