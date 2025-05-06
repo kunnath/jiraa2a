@@ -38,7 +38,10 @@ import {
   CircularProgress,
   InputAdornment,
   Badge,
-  LinearProgress
+  LinearProgress,
+  Menu,
+  ListItemIcon,
+  ListItemText
 } from '@mui/material';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
@@ -57,6 +60,8 @@ import ImageIcon from '@mui/icons-material/Image';
 import AccountTreeIcon from '@mui/icons-material/AccountTree';
 import TextRotateVerticalIcon from '@mui/icons-material/TextRotateVertical';
 import TextRotationNoneIcon from '@mui/icons-material/TextRotationNone';
+import CreateIcon from '@mui/icons-material/Create';
+import InfoIcon from '@mui/icons-material/Info';
 import { toPng, toJpeg } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 
@@ -258,6 +263,10 @@ const JiraVisualization = ({ data }) => {
   const [detailsJson, setDetailsJson] = useState('');
   const flowRef = useRef(null);
   const reactFlowInstance = useReactFlow();
+  
+  // Context menu state
+  const [contextMenu, setContextMenu] = useState(null);
+  const [contextMenuNode, setContextMenuNode] = useState(null);
 
   useEffect(() => {
     console.log("JiraVisualization received data:", data);
@@ -681,6 +690,50 @@ const JiraVisualization = ({ data }) => {
     // Fetch detailed information including description
     fetchIssueDetails(node);
   }, [fetchIssueDetails]);
+  
+  // Handle node right-click for context menu
+  const onNodeContextMenu = useCallback((event, node) => {
+    // Prevent default context menu
+    event.preventDefault();
+    
+    // Set context menu position
+    setContextMenu({
+      mouseX: event.clientX + 2,
+      mouseY: event.clientY - 6,
+    });
+    
+    // Store the node that was right-clicked
+    setContextMenuNode(node);
+  }, []);
+  
+  // Handle closing the context menu
+  const handleContextMenuClose = useCallback(() => {
+    setContextMenu(null);
+  }, []);
+  
+  // Create test case in Xray format
+  const handleCreateTestCase = useCallback(() => {
+    if (!contextMenuNode) return;
+    
+    // Here you would implement the logic to create a test case in Xray format
+    // For now, we'll just show an alert
+    alert(`Creating test case for ${contextMenuNode.data.key}: ${contextMenuNode.data.summary}`);
+    
+    // Close the context menu
+    handleContextMenuClose();
+  }, [contextMenuNode, handleContextMenuClose]);
+  
+  // Show test case status
+  const handleShowTestStatus = useCallback(() => {
+    if (!contextMenuNode) return;
+    
+    // Here you would implement the logic to show test case status
+    // For now, we'll just show an alert
+    alert(`Test status for ${contextMenuNode.data.key}: No test cases found`);
+    
+    // Close the context menu
+    handleContextMenuClose();
+  }, [contextMenuNode, handleContextMenuClose]);
 
   // Clear selected node
   const clearSelectedNode = useCallback(() => {
@@ -1033,6 +1086,7 @@ const JiraVisualization = ({ data }) => {
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onNodeClick={onNodeClick}
+                onNodeContextMenu={onNodeContextMenu}
                 nodeTypes={nodeTypes}
                 edgeTypes={edgeTypes}
                 fitView
@@ -1535,6 +1589,31 @@ const JiraVisualization = ({ data }) => {
           </Box>
         </TabPanel>
       </Paper>
+
+      {/* Context Menu */}
+      <Menu
+        open={contextMenu !== null}
+        onClose={handleContextMenuClose}
+        anchorReference="anchorPosition"
+        anchorPosition={
+          contextMenu !== null
+            ? { top: contextMenu.mouseY, left: contextMenu.mouseX }
+            : undefined
+        }
+      >
+        <MenuItem onClick={handleCreateTestCase}>
+          <ListItemIcon>
+            <CreateIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>Create Test Case in XRay Format</ListItemText>
+        </MenuItem>
+        <MenuItem onClick={handleShowTestStatus}>
+          <ListItemIcon>
+            <InfoIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>Show Test Case Status</ListItemText>
+        </MenuItem>
+      </Menu>
     </Container>
   );
 };
