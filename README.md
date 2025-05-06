@@ -14,6 +14,9 @@ A full-stack application that visualizes relationships between JIRA issues using
 - Comprehensive analytics with charts and statistics
 - Zoom, pan, and explore the relationship graph
 - Toggle between vertical and horizontal layout
+- View full JIRA issue descriptions
+- Format JIRA data for LLM (Large Language Model) processing
+- Export issue data as JSON for advanced analysis
 
 ## Prerequisites
 
@@ -101,6 +104,9 @@ npm run dev
 3. Click "Visualize" to generate the relationship graph
 4. Explore the visualization by zooming and panning
 5. Export the visualization as a PNG if needed
+6. View issue descriptions and prepare data for LLM analysis
+
+For more information on using the JIRA data with LLMs, see [JIRA LLM Integration](docs/jira_llm_integration.md).
 
 ## Security Note
 

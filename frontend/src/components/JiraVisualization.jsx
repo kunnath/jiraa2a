@@ -7,7 +7,8 @@ import ReactFlow, {
   Panel, 
   applyNodeChanges, 
   applyEdgeChanges,
-  useReactFlow 
+  useReactFlow,
+  ReactFlowProvider
 } from 'reactflow';
 import dagre from 'dagre';
 import 'reactflow/dist/style.css';
@@ -36,7 +37,8 @@ import {
   Divider,
   CircularProgress,
   InputAdornment,
-  Badge
+  Badge,
+  LinearProgress
 } from '@mui/material';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
@@ -61,6 +63,8 @@ import { jsPDF } from 'jspdf';
 import { Chart as ChartJS, ArcElement, Tooltip as ChartTooltip, Legend, CategoryScale, LinearScale, BarElement, Title } from 'chart.js';
 import { Pie, Bar } from 'react-chartjs-2';
 import CustomNode from './CustomNode';
+import { apiService } from '../services/apiService';
+import { adfToText, formatJiraForLLM } from '../utils/jiraFormatter';
 
 // Register Chart.js components
 ChartJS.register(ArcElement, ChartTooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
@@ -75,18 +79,32 @@ const nodeHeight = 120;
 
 // Helper function to layout the graph using dagre
 const getLayoutedElements = (nodes, edges, direction = 'TB') => {
-  if (!nodes.length) return { nodes, edges };
+  // Ensure we have valid arrays to work with
+  if (!nodes || !nodes.length) {
+    console.warn("getLayoutedElements received empty or invalid nodes array");
+    return { nodes: [], edges: edges || [] };
+  }
   
+  if (!edges) {
+    console.warn("getLayoutedElements received undefined edges array");
+    edges = [];
+  }
+  
+  // Clear the graph before creating a new layout
   dagreGraph.setGraph({ rankdir: direction });
   
   // Add nodes to dagre graph
   nodes.forEach((node) => {
-    dagreGraph.setNode(node.id, { width: nodeWidth, height: nodeHeight });
+    if (node && node.id) {
+      dagreGraph.setNode(node.id, { width: nodeWidth, height: nodeHeight });
+    }
   });
   
   // Add edges to dagre graph
   edges.forEach((edge) => {
-    dagreGraph.setEdge(edge.source, edge.target);
+    if (edge && edge.source && edge.target) {
+      dagreGraph.setEdge(edge.source, edge.target);
+    }
   });
   
   // Calculate the layout
@@ -94,14 +112,44 @@ const getLayoutedElements = (nodes, edges, direction = 'TB') => {
   
   // Apply layout positions to nodes
   const layoutedNodes = nodes.map((node) => {
-    const nodeWithPosition = dagreGraph.node(node.id);
-    return {
-      ...node,
-      position: {
-        x: nodeWithPosition.x - nodeWidth / 2,
-        y: nodeWithPosition.y - nodeHeight / 2,
-      },
-    };
+    if (!node || !node.id) {
+      console.warn("Found invalid node in layout calculation:", node);
+      return node; // Return the node as is if it's invalid
+    }
+    
+    try {
+      const nodeWithPosition = dagreGraph.node(node.id);
+      if (!nodeWithPosition) {
+        console.warn(`Node ${node.id} not found in dagre graph`);
+        return {
+          ...node,
+          position: node.position || { x: 0, y: 0 } // Use existing position or default
+        };
+      }
+      
+      // Check if x and y properties exist on nodeWithPosition
+      if (typeof nodeWithPosition.x !== 'number' || typeof nodeWithPosition.y !== 'number') {
+        console.warn(`Invalid position data for node ${node.id}:`, nodeWithPosition);
+        return {
+          ...node,
+          position: node.position || { x: 0, y: 0 } // Use existing position or default
+        };
+      }
+      
+      return {
+        ...node,
+        position: {
+          x: nodeWithPosition.x - nodeWidth / 2,
+          y: nodeWithPosition.y - nodeHeight / 2,
+        },
+      };
+    } catch (err) {
+      console.error(`Error processing node ${node.id}:`, err);
+      return {
+        ...node,
+        position: node.position || { x: 0, y: 0 } // Use existing position or default
+      };
+    }
   });
   
   return { nodes: layoutedNodes, edges };
@@ -202,18 +250,41 @@ const JiraVisualization = ({ data }) => {
   const [layoutDirection, setLayoutDirection] = useState('TB'); // TB = top to bottom
   const [issueStats, setIssueStats] = useState({ total: 0, requirements: 0, tests: 0, defects: 0, other: 0 });
   const [isExporting, setIsExporting] = useState(false);
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [issueDetails, setIssueDetails] = useState(null);
+  const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+  const [detailsTabValue, setDetailsTabValue] = useState(0);
+  const [detailsJson, setDetailsJson] = useState('');
   const flowRef = useRef(null);
   const reactFlowInstance = useReactFlow();
-  const [selectedNode, setSelectedNode] = useState(null);
 
   useEffect(() => {
-    if (!data) {
+    console.log("JiraVisualization received data:", data);
+    
+    if (!data || !data.nodes || !data.edges) {
+      console.error("Invalid data format received for visualization", data);
+      navigate('/');
+      return;
+    }
+    
+    // Additional validation to ensure nodes and edges are arrays
+    if (!Array.isArray(data.nodes) || !Array.isArray(data.edges)) {
+      console.error("Data nodes or edges are not arrays", data);
+      navigate('/');
+      return;
+    }
+    
+    // Empty arrays check
+    if (data.nodes.length === 0) {
+      console.error("No nodes found in data", data);
       navigate('/');
       return;
     }
 
-    // Calculate statistics
+    // Calculate statistics - with extra validation
     const stats = data.nodes.reduce((acc, node) => {
+      if (!node) return acc; // Skip null/undefined nodes
+      
       acc.total++;
       if (node.type === 'requirement') acc.requirements++;
       else if (node.type === 'test') acc.tests++;
@@ -224,22 +295,35 @@ const JiraVisualization = ({ data }) => {
     
     setIssueStats(stats);
     
-    // Apply layout to nodes and edges
-    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(data.nodes, data.edges, layoutDirection);
-    
-    // Enhance edges with custom type and colors
-    const enhancedEdges = layoutedEdges.map(edge => ({
-      ...edge,
-      type: 'custom',
-      animated: edge.label && (
-        edge.label.toLowerCase().includes('block') || 
-        edge.label.toLowerCase().includes('depend')
-      )
-    }));
-    
-    setNodes(layoutedNodes);
-    setEdges(enhancedEdges);
-    setFilteredNodes(layoutedNodes);
+    try {
+      // Apply layout to nodes and edges
+      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(data.nodes, data.edges, layoutDirection);
+      
+      if (!layoutedNodes || !layoutedEdges) {
+        console.error("Layout calculation failed", { layoutedNodes, layoutedEdges });
+        return;
+      }
+      
+      // Enhance edges with custom type and colors
+      const enhancedEdges = layoutedEdges.map(edge => {
+        if (!edge) return null;
+        return {
+          ...edge,
+          type: 'custom',
+          animated: edge.label && (
+            edge.label.toLowerCase().includes('block') || 
+            edge.label.toLowerCase().includes('depend')
+          )
+        };
+      }).filter(Boolean); // Filter out any null values
+      
+      setNodes(layoutedNodes);
+      setEdges(enhancedEdges);
+      setFilteredNodes(layoutedNodes);
+    } catch (err) {
+      console.error("Error processing visualization data:", err);
+      navigate('/');
+    }
   }, [data, navigate, layoutDirection]);
 
   // Handle tab change
@@ -274,13 +358,20 @@ const JiraVisualization = ({ data }) => {
       setFilteredNodes(nodes);
     } else {
       const filtered = nodes.filter((node) => {
+        if (!node || !node.data) return false;
+        
         const nodeData = node.data;
-        return (
-          nodeData.key.toLowerCase().includes(term) || 
-          nodeData.summary.toLowerCase().includes(term) ||
-          nodeData.status.toLowerCase().includes(term) || 
-          nodeData.issue_type.toLowerCase().includes(term)
-        );
+        try {
+          return (
+            (nodeData.key && nodeData.key.toLowerCase().includes(term)) || 
+            (nodeData.summary && nodeData.summary.toLowerCase().includes(term)) ||
+            (nodeData.status && nodeData.status.toLowerCase().includes(term)) || 
+            (nodeData.issue_type && nodeData.issue_type.toLowerCase().includes(term))
+          );
+        } catch (err) {
+          console.error("Error filtering node:", err, node);
+          return false;
+        }
       });
       setFilteredNodes(filtered);
     }
@@ -292,38 +383,61 @@ const JiraVisualization = ({ data }) => {
       return;
     }
     
-    // Find nodes that match the search term
-    const matchingNodes = nodes.filter((node) => {
-      const nodeData = node.data;
-      return (
-        nodeData.key.toLowerCase().includes(searchTerm.toLowerCase()) || 
-        nodeData.summary.toLowerCase().includes(searchTerm.toLowerCase())
-      );
-    });
-    
-    if (matchingNodes.length > 0) {
-      // Create a set of highlighted node IDs
-      const highlightSet = new Set(matchingNodes.map(node => node.id));
-      
-      // Add all nodes that are directly connected to the highlighted nodes
-      edges.forEach(edge => {
-        if (highlightSet.has(edge.source) || highlightSet.has(edge.target)) {
-          highlightSet.add(edge.source);
-          highlightSet.add(edge.target);
+    try {
+      // Find nodes that match the search term
+      const matchingNodes = nodes.filter((node) => {
+        if (!node || !node.data) return false;
+        
+        const nodeData = node.data;
+        try {
+          return (
+            (nodeData.key && nodeData.key.toLowerCase().includes(searchTerm.toLowerCase())) || 
+            (nodeData.summary && nodeData.summary.toLowerCase().includes(searchTerm.toLowerCase()))
+          );
+        } catch (err) {
+          console.error("Error filtering node in advanced search:", err, node);
+          return false;
         }
       });
       
-      setHighlightedNodes(highlightSet);
-      setAdvancedSearchActive(true);
-      
-      // Show all nodes but highlight the relevant ones
-      setFilteredNodes(nodes.map(node => ({
-        ...node,
-        style: {
-          ...node.style,
-          opacity: highlightSet.has(node.id) ? 1 : 0.25,
-        },
-      })));
+      if (matchingNodes.length > 0) {
+        // Create a set of highlighted node IDs
+        const highlightSet = new Set(
+          matchingNodes
+            .filter(node => node && node.id)
+            .map(node => node.id)
+        );
+        
+        // Add all nodes that are directly connected to the highlighted nodes
+        if (Array.isArray(edges)) {
+          edges.forEach(edge => {
+            if (!edge || !edge.source || !edge.target) return;
+            
+            if (highlightSet.has(edge.source) || highlightSet.has(edge.target)) {
+              highlightSet.add(edge.source);
+              highlightSet.add(edge.target);
+            }
+          });
+        }
+        
+        setHighlightedNodes(highlightSet);
+        setAdvancedSearchActive(true);
+        
+        // Show all nodes but highlight the relevant ones
+        setFilteredNodes(nodes.map(node => {
+          if (!node || !node.id) return node;
+          
+          return {
+            ...node,
+            style: {
+              ...node.style,
+              opacity: highlightSet.has(node.id) ? 1 : 0.25,
+            },
+          };
+        }));
+      }
+    } catch (err) {
+      console.error("Error in advanced search:", err);
     }
   };
 
@@ -335,16 +449,41 @@ const JiraVisualization = ({ data }) => {
     
     setSelectedNodeTypes(updatedFilters);
     
-    // Apply filters to nodes
-    const filtered = nodes.filter(node => {
-      const matchesSearch = !searchTerm || 
-        node.data.key.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        node.data.summary.toLowerCase().includes(searchTerm.toLowerCase());
+    try {
+      // Apply filters to nodes with additional validation
+      const filtered = nodes.filter(node => {
+        if (!node || !node.type) {
+          console.warn("Found node without type during filtering:", node);
+          return false;
+        }
+        
+        try {
+          // Check if the node has valid data for searching
+          const hasValidData = node.data && typeof node.data === 'object';
+          let matchesSearch = !searchTerm; // Default to true if no search term
+          
+          if (searchTerm && hasValidData) {
+            matchesSearch = 
+              (node.data.key && node.data.key.toLowerCase().includes(searchTerm.toLowerCase())) ||
+              (node.data.summary && node.data.summary.toLowerCase().includes(searchTerm.toLowerCase()));
+          }
+          
+          return matchesSearch && updatedFilters.includes(node.type);
+        } catch (err) {
+          console.error("Error filtering node by type:", err, node);
+          return false;
+        }
+      });
       
-      return matchesSearch && updatedFilters.includes(node.type);
-    });
-    
-    setFilteredNodes(filtered);
+      setFilteredNodes(filtered);
+    } catch (err) {
+      console.error("Error in node type filtering:", err);
+      // Fall back to showing nodes of the selected types without search filtering
+      const safeFiltered = nodes.filter(node => 
+        node && node.type && updatedFilters.includes(node.type)
+      );
+      setFilteredNodes(safeFiltered);
+    }
   };
 
   // Handle layout direction change
@@ -432,31 +571,104 @@ const JiraVisualization = ({ data }) => {
   const exportCSV = () => {
     if (!nodes || nodes.length === 0) return;
     
-    // Create CSV header row
-    const header = ['Key', 'Summary', 'Issue Type', 'Status', 'Priority'];
-    
-    // Create CSV data rows
-    const rows = nodes.map(node => [
-      node.data.key,
-      `"${node.data.summary.replace(/"/g, '""')}"`, // Quote and escape summary text
-      node.data.issue_type,
-      node.data.status,
-      node.data.priority || ''
-    ]);
-    
-    // Combine header and rows
-    const csvContent = [header].concat(rows).map(row => row.join(',')).join('\n');
-    
-    // Create Blob and download
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', 'jira-issues.csv');
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    try {
+      // Create CSV header row
+      const header = ['Key', 'Summary', 'Issue Type', 'Status', 'Priority'];
+      
+      // Create CSV data rows with safeguards against null values
+      const rows = nodes
+        .filter(node => node && node.data) // Filter out invalid nodes
+        .map(node => {
+          try {
+            const data = node.data || {};
+            return [
+              data.key || 'N/A',
+              `"${(data.summary || 'No summary').replace(/"/g, '""')}"`, // Quote and escape summary text
+              data.issue_type || 'N/A',
+              data.status || 'N/A',
+              data.priority || ''
+            ];
+          } catch (err) {
+            console.error("Error processing node for CSV:", err, node);
+            return ['Error', 'Error processing node', 'Error', 'Error', ''];
+          }
+        });
+      
+      // Combine header and rows
+      const csvContent = [header].concat(rows).map(row => row.join(',')).join('\n');
+      
+      // Create Blob and download
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'jira-issues.csv');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (err) {
+      console.error("Error exporting CSV:", err);
+      alert("Failed to export CSV data. See console for details.");
+    }
   };
+
+  // Fetch detailed issue information when a node is selected
+  const fetchIssueDetails = useCallback(async (node) => {
+    if (!node || !node.data || !node.data.key) {
+      console.error('Invalid node data for fetchIssueDetails:', node);
+      return;
+    }
+    
+    setIsLoadingDetails(true);
+    
+    try {
+      // Extract credentials from the URL or session storage
+      // In a real app, you'd store these securely
+      const savedData = sessionStorage.getItem('jiraFormData');
+      if (!savedData) {
+        console.error('No JIRA credentials found');
+        return;
+      }
+      
+      let credentials;
+      try {
+        credentials = JSON.parse(savedData);
+        // Check for base_url (not baseUrl) since that's the property name used in the form
+        if (!credentials || !credentials.base_url) {
+          console.error('Invalid JIRA credentials:', credentials);
+          return;
+        }
+      } catch (error) {
+        console.error('Error parsing JIRA credentials:', error);
+        return;
+      }
+      
+      // Call API to get detailed issue information
+      const details = await apiService.getIssueDetails(credentials, node.data.key);
+      
+      if (!details) {
+        console.error('No details returned for issue:', node.data.key);
+        return;
+      }
+      
+      setIssueDetails(details);
+      
+      // Format JSON for display
+      setDetailsJson(JSON.stringify(details, null, 2));
+      
+      // Format data for LLM processing and store it
+      try {
+        const formattedForLLM = formatJiraForLLM(details);
+        sessionStorage.setItem('jiraLLMFormatted', formattedForLLM);
+      } catch (formatError) {
+        console.error('Error formatting issue for LLM:', formatError);
+      }
+    } catch (err) {
+      console.error('Error fetching issue details:', err);
+    } finally {
+      setIsLoadingDetails(false);
+    }
+  }, []);
 
   // Track selected node for details display
   // const [selectedNode, setSelectedNode] = useState(null);
@@ -464,11 +676,15 @@ const JiraVisualization = ({ data }) => {
   // Handle node click to show details
   const onNodeClick = useCallback((event, node) => {
     setSelectedNode(node);
-  }, []);
+    // Fetch detailed information including description
+    fetchIssueDetails(node);
+  }, [fetchIssueDetails]);
 
   // Clear selected node
   const clearSelectedNode = useCallback(() => {
     setSelectedNode(null);
+    setIssueDetails(null);
+    setDetailsJson('');
   }, []);
 
   // Create chart data for the Analytics tab
@@ -527,24 +743,58 @@ const JiraVisualization = ({ data }) => {
     },
   };
 
-  if (!data) {
+  // Replace the if (!data) check with a more comprehensive check
+  if (!data || !data.nodes || !data.nodes.length || !data.edges) {
     return (
       <Container maxWidth="md">
         <Alert severity="warning" sx={{ mt: 4 }}>
-          No visualization data available. Please submit the form first.
+          <Typography variant="h6">No visualization data available</Typography>
+          <Typography variant="body1">
+            Please return to the form and submit valid JIRA issue details. 
+            Make sure the central JIRA ID exists and has linked issues.
+          </Typography>
+          <Button 
+            variant="contained" 
+            color="primary" 
+            onClick={() => navigate('/')}
+            sx={{ mt: 2 }}
+          >
+            Return to Form
+          </Button>
         </Alert>
       </Container>
     );
   }
 
-  // Display filtered nodes in the graph
-  const displayedNodes = filteredNodes.filter(node => selectedNodeTypes.includes(node.type));
+  // Display filtered nodes in the graph with error handling
+  const displayedNodes = filteredNodes.filter(node => {
+    try {
+      return node && node.type && selectedNodeTypes.includes(node.type);
+    } catch (err) {
+      console.error("Error filtering node for display:", err, node);
+      return false;
+    }
+  });
   
   // Filter only edges that connect displayed nodes
-  const displayedNodeIds = new Set(displayedNodes.map(node => node.id));
-  const displayedEdges = edges.filter(edge => 
-    displayedNodeIds.has(edge.source) && displayedNodeIds.has(edge.target)
+  const displayedNodeIds = new Set(
+    displayedNodes
+      .filter(node => node && node.id)
+      .map(node => node.id)
   );
+  
+  const displayedEdges = edges.filter(edge => {
+    try {
+      return edge && 
+             edge.source && 
+             edge.target && 
+             displayedNodeIds.has(edge.source) && 
+             displayedNodeIds.has(edge.target);
+    } catch (err) {
+      console.error("Error filtering edge for display:", err, edge);
+      return false;
+    }
+  });
 
   return (
     <Container maxWidth="xl" sx={{ mt: 2, height: 'calc(100vh - 120px)', display: 'flex', flexDirection: 'column' }}>
@@ -838,7 +1088,7 @@ const JiraVisualization = ({ data }) => {
               <Paper 
                 elevation={2} 
                 sx={{ 
-                  width: 300, 
+                  width: 350, 
                   borderLeft: '1px solid #e0e0e0',
                   display: 'flex',
                   flexDirection: 'column',
@@ -857,67 +1107,239 @@ const JiraVisualization = ({ data }) => {
                     <RestartAltIcon fontSize="small" />
                   </IconButton>
                 </Box>
-                <Box sx={{ p: 2 }}>
-                  <Typography variant="subtitle1" fontWeight="bold" color="primary">
-                    {selectedNode.data.key}
-                  </Typography>
-                  <Typography variant="body1" gutterBottom>
-                    {selectedNode.data.summary}
-                  </Typography>
-                  
-                  <Box sx={{ mt: 2 }}>
-                    <Typography variant="subtitle2" color="text.secondary">
-                      Issue Type
+                
+                {/* Basic Issue Details Tabs */}
+                <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+                  <Tabs 
+                    value={detailsTabValue} 
+                    onChange={(e, newValue) => setDetailsTabValue(newValue)} 
+                    variant="fullWidth"
+                  >
+                    <Tab label="Overview" />
+                    <Tab label="Description" />
+                    <Tab label="JSON" />
+                  </Tabs>
+                </Box>
+                
+                {isLoadingDetails && (
+                  <LinearProgress color="primary" />
+                )}
+                
+                {/* Overview Tab */}
+                {detailsTabValue === 0 && (
+                  <Box sx={{ p: 2 }}>
+                    <Typography variant="subtitle1" fontWeight="bold" color="primary">
+                      {selectedNode.data.key}
                     </Typography>
-                    <Typography variant="body2" gutterBottom>
-                      {selectedNode.data.issue_type}
+                    <Typography variant="body1" gutterBottom>
+                      {selectedNode.data.summary}
                     </Typography>
-                    
-                    <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
-                      Status
-                    </Typography>
-                    <Typography variant="body2" gutterBottom>
-                      {selectedNode.data.status}
-                    </Typography>
-                    
-                    {selectedNode.data.priority && (
-                      <>
-                        <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
-                          Priority
-                        </Typography>
-                        <Typography variant="body2" gutterBottom>
-                          {selectedNode.data.priority}
-                        </Typography>
-                      </>
-                    )}
                     
                     <Box sx={{ mt: 2 }}>
                       <Typography variant="subtitle2" color="text.secondary">
-                        Connections
+                        Issue Type
                       </Typography>
-                      <Box sx={{ mt: 1 }}>
-                        {edges.filter(edge => edge.source === selectedNode.id || edge.target === selectedNode.id)
-                          .map((edge) => {
-                            const isSource = edge.source === selectedNode.id;
-                            const connectedNodeId = isSource ? edge.target : edge.source;
-                            const connectedNode = nodes.find(n => n.id === connectedNodeId);
-                            
-                            if (!connectedNode) return null;
-                            
-                            return (
-                              <Chip
-                                key={edge.id}
-                                size="small"
-                                label={`${connectedNode.data.key} (${isSource ? 'Outgoing' : 'Incoming'})`}
-                                sx={{ mb: 0.5, mr: 0.5 }}
-                              />
-                            );
-                          })
-                        }
+                      <Typography variant="body2" gutterBottom>
+                        {selectedNode.data.issue_type}
+                      </Typography>
+                      
+                      <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
+                        Status
+                      </Typography>
+                      <Typography variant="body2" gutterBottom>
+                        {selectedNode.data.status}
+                      </Typography>
+                      
+                      {selectedNode.data.priority && (
+                        <>
+                          <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
+                            Priority
+                          </Typography>
+                          <Typography variant="body2" gutterBottom>
+                            {selectedNode.data.priority}
+                          </Typography>
+                        </>
+                      )}
+                      
+                      {issueDetails && (
+                        <>
+                          <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
+                            Assignee
+                          </Typography>
+                          <Typography variant="body2" gutterBottom>
+                            {issueDetails.assignee || "Unassigned"}
+                          </Typography>
+                          
+                          <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
+                            Reporter
+                          </Typography>
+                          <Typography variant="body2" gutterBottom>
+                            {issueDetails.reporter || "Unknown"}
+                          </Typography>
+                          
+                          <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
+                            Created
+                          </Typography>
+                          <Typography variant="body2" gutterBottom>
+                            {new Date(issueDetails.created).toLocaleDateString()}
+                          </Typography>
+                        </>
+                      )}
+                      
+                      <Box sx={{ mt: 2 }}>
+                        <Typography variant="subtitle2" color="text.secondary">
+                          Connections
+                        </Typography>
+                        <Box sx={{ mt: 1 }}>
+                          {edges.filter(edge => edge.source === selectedNode.id || edge.target === selectedNode.id)
+                            .map((edge) => {
+                              const isSource = edge.source === selectedNode.id;
+                              const connectedNodeId = isSource ? edge.target : edge.source;
+                              const connectedNode = nodes.find(n => n.id === connectedNodeId);
+                              
+                              if (!connectedNode) return null;
+                              
+                              return (
+                                <Chip
+                                  key={edge.id}
+                                  size="small"
+                                  label={`${connectedNode.data.key} (${isSource ? 'Outgoing' : 'Incoming'})`}
+                                  sx={{ mb: 0.5, mr: 0.5 }}
+                                />
+                              );
+                            })
+                          }
+                        </Box>
                       </Box>
                     </Box>
                   </Box>
-                </Box>
+                )}
+                
+                {/* Description Tab */}
+                {detailsTabValue === 1 && (
+                  <Box sx={{ p: 2 }}>
+                    <Typography variant="subtitle1" fontWeight="bold" color="primary" gutterBottom>
+                      {selectedNode.data.key} - Description
+                    </Typography>
+                    
+                    {issueDetails ? (
+                      <Box sx={{ 
+                        mt: 1, 
+                        p: 2, 
+                        maxHeight: '500px', 
+                        overflowY: 'auto',
+                        backgroundColor: '#f9f9f9',
+                        borderRadius: 1,
+                        whiteSpace: 'pre-wrap'
+                      }}>
+                        {/* Use our formatter to handle Atlassian Document Format if present */}
+                        {adfToText(issueDetails.description) || "No description available."}
+                      </Box>
+                    ) : (
+                      <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
+                        <CircularProgress size={30} />
+                      </Box>
+                    )}
+                    
+                    <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
+                      <Button 
+                        variant="outlined" 
+                        color="primary" 
+                        size="small"
+                        onClick={() => {
+                          if (issueDetails && issueDetails.description) {
+                            // Save JSON data to session storage for LLM processing
+                            const llmData = {
+                              issue: selectedNode.data.key,
+                              summary: selectedNode.data.summary,
+                              description: adfToText(issueDetails.description)
+                            };
+                            sessionStorage.setItem('jiraLLMData', JSON.stringify(llmData));
+                            alert('Issue description saved for LLM processing');
+                          }
+                        }}
+                      >
+                        Save Description for LLM
+                      </Button>
+                      
+                      <Button 
+                        variant="contained" 
+                        color="primary" 
+                        size="small"
+                        onClick={() => {
+                          const formatted = sessionStorage.getItem('jiraLLMFormatted');
+                          if (formatted) {
+                            navigator.clipboard.writeText(formatted);
+                            alert('Formatted JIRA data copied to clipboard for LLM input');
+                          }
+                        }}
+                      >
+                        Copy for LLM Input
+                      </Button>
+                    </Stack>
+                  </Box>
+                )}
+                
+                {/* JSON Tab for LLM processing */}
+                {detailsTabValue === 2 && (
+                  <Box sx={{ p: 2 }}>
+                    <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                      JSON Data for LLM Processing
+                    </Typography>
+                    
+                    <Box sx={{ 
+                      mt: 1, 
+                      p: 2, 
+                      maxHeight: '500px', 
+                      overflowY: 'auto',
+                      backgroundColor: '#f5f5f5',
+                      borderRadius: 1,
+                      fontFamily: 'monospace',
+                      fontSize: '12px',
+                      whiteSpace: 'pre-wrap'
+                    }}>
+                      {detailsJson || "Loading JSON data..."}
+                    </Box>
+                    
+                    <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
+                      <Button
+                        variant="outlined"
+                        color="primary"
+                        size="small"
+                        onClick={() => {
+                          if (detailsJson) {
+                            sessionStorage.setItem('jiraDetailedJson', detailsJson);
+                            alert('JSON data saved for LLM processing');
+                          }
+                        }}
+                      >
+                        Save JSON to Session
+                      </Button>
+                      
+                      <Button
+                        variant="contained"
+                        color="primary"
+                        size="small"
+                        onClick={() => {
+                          if (detailsJson) {
+                            // Create downloadable JSON file
+                            const blob = new Blob([detailsJson], { type: 'application/json' });
+                            const url = URL.createObjectURL(blob);
+                            const link = document.createElement('a');
+                            link.href = url;
+                            link.download = `${selectedNode.data.key}_for_llm.json`;
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                            URL.revokeObjectURL(url);
+                          }
+                        }}
+                      >
+                        Download as JSON
+                      </Button>
+                    </Stack>
+                  </Box>
+                )}
               </Paper>
             )}
           </Box>
@@ -1073,4 +1495,13 @@ const JiraVisualization = ({ data }) => {
   );
 };
 
-export default JiraVisualization;
+// Wrap the component with ReactFlowProvider to enable the useReactFlow hook
+const JiraVisualizationWithProvider = (props) => {
+  return (
+    <ReactFlowProvider>
+      <JiraVisualization {...props} />
+    </ReactFlowProvider>
+  );
+};
+
+export default JiraVisualizationWithProvider;

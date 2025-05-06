@@ -106,10 +106,28 @@ const JiraForm = ({ onVisualizationData }) => {
     setError(null);
     
     try {
+      console.log('Sending data to backend:', formData);
+      
+      // Save credentials to session storage 
+      // Note: In a production app, you would handle this more securely
+      // This is only for demonstration purposes to enable the description feature
+      sessionStorage.setItem('jiraFormData', JSON.stringify(formData));
+      
       const data = await apiService.visualizeJira(formData);
+      console.log('Received visualization data:', data);
+      
+      if (!data || !data.nodes || !data.edges) {
+        throw new Error('Invalid data format received from API');
+      }
+      
+      if (data.nodes.length === 0) {
+        throw new Error('No JIRA issues found for visualization');
+      }
+      
       onVisualizationData(data);
       navigate('/visualization');
     } catch (err) {
+      console.error('Visualization error:', err);
       setError(err.message || 'Failed to fetch JIRA data');
     } finally {
       setLoading(false);
@@ -242,7 +260,7 @@ const JiraForm = ({ onVisualizationData }) => {
             </Alert>
           )}
           
-          <Box sx={{ mt: 3, display: 'flex', gap: 2 }}>
+          <Box sx={{ mt: 3, display: 'flex', gap: 2, flexWrap: 'wrap' }}>
             <Button
               variant="outlined"
               color="primary"
