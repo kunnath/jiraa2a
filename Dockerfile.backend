@@ -5,9 +5,18 @@ WORKDIR /app
 COPY backend/requirements.txt .
 RUN pip install -r requirements.txt
 
+# Install httpx since we need it for the setup script
+RUN pip install httpx
+
 COPY backend /app
 
 ENV HOST=0.0.0.0
 ENV PORT=8000
+ENV OLLAMA_API_BASE=http://host.docker.internal:11434
 
-CMD ["python", "run.py"]
+# Add a script to check Ollama status and wait for it to be ready
+COPY ./backend/setup_ollama.py /app/setup_ollama.py
+RUN chmod +x /app/setup_ollama.py
+
+# Use a startup script that waits for Ollama before starting the app
+CMD python setup_ollama.py && python run.py

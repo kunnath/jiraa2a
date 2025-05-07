@@ -70,6 +70,7 @@ import { Pie, Bar } from 'react-chartjs-2';
 import CustomNode from './CustomNode';
 import { apiService } from '../services/apiService';
 import { adfToText, formatJiraForLLM } from '../utils/jiraFormatter';
+import TestCaseStatusModal from './TestCaseStatusModal';
 
 // Register Chart.js components
 ChartJS.register(ArcElement, ChartTooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
@@ -256,17 +257,31 @@ const JiraVisualization = ({ data }) => {
   const [layoutDirection, setLayoutDirection] = useState('TB'); // TB = top to bottom
   const [issueStats, setIssueStats] = useState({ total: 0, parents: 0, requirements: 0, tests: 0, defects: 0, other: 0 });
   const [isExporting, setIsExporting] = useState(false);
+  const [elements, setElements] = useState({ nodes: [], edges: [] });
   const [selectedNode, setSelectedNode] = useState(null);
   const [issueDetails, setIssueDetails] = useState(null);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   const [detailsTabValue, setDetailsTabValue] = useState(0);
   const [detailsJson, setDetailsJson] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [filterText, setFilterText] = useState('');
+  const [issueTypeFilter, setIssueTypeFilter] = useState('all');
+  const [showStatistics, setShowStatistics] = useState(false);
+  
+  // Reference to the flow wrapper div for export functionality
   const flowRef = useRef(null);
-  const reactFlowInstance = useReactFlow();
+  const [reactFlowInstance, setReactFlowInstance] = useState(null);
   
   // Context menu state
   const [contextMenu, setContextMenu] = useState(null);
   const [contextMenuNode, setContextMenuNode] = useState(null);
+  
+  // Test case state
+  const [showCreateTestCase, setShowCreateTestCase] = useState(false);
+  const [generatedTestCase, setGeneratedTestCase] = useState(null);
+  const [isGeneratingTestCase, setIsGeneratingTestCase] = useState(false);
+  const [showTestCaseStatus, setShowTestCaseStatus] = useState(false);
 
   useEffect(() => {
     console.log("JiraVisualization received data:", data);
@@ -711,25 +726,103 @@ const JiraVisualization = ({ data }) => {
     setContextMenu(null);
   }, []);
   
-  // Create test case in Xray format
-  const handleCreateTestCase = useCallback(() => {
+  // Create test case in Xray format using LLM
+  const handleCreateTestCase = useCallback(async () => {
     if (!contextMenuNode) return;
-    
-    // Here you would implement the logic to create a test case in Xray format
-    // For now, we'll just show an alert
-    alert(`Creating test case for ${contextMenuNode.data.key}: ${contextMenuNode.data.summary}`);
     
     // Close the context menu
     handleContextMenuClose();
-  }, [contextMenuNode, handleContextMenuClose]);
+    
+    // Set the current node as selected to show details
+    setSelectedNode(contextMenuNode);
+    
+    // Start generating the test case
+    setIsGeneratingTestCase(true);
+    setShowCreateTestCase(true);
+    
+    // Switch to test case tab
+    setDetailsTabValue(3);
+    
+    // Get issue details if not already loaded
+    let currentIssueDetails = issueDetails;
+    if (!currentIssueDetails) {
+      try {
+        setIsLoadingDetails(true);
+        // Fetch issue details
+        const credentials = JSON.parse(sessionStorage.getItem('jiraCredentials'));
+        if (!credentials) {
+          throw new Error('No JIRA credentials found. Please log in again.');
+        }
+        
+        const response = await apiService.getIssueDetails(credentials, contextMenuNode.data.key);
+        
+        if (response.success) {
+          currentIssueDetails = response.data;
+          setIssueDetails(currentIssueDetails);
+          setDetailsJson(JSON.stringify(currentIssueDetails, null, 2));
+        } else {
+          throw new Error(response.error || 'Failed to fetch issue details');
+        }
+      } catch (error) {
+        console.error('Error fetching issue details:', error);
+      } finally {
+        setIsLoadingDetails(false);
+      }
+    }
+    
+    try {
+      // Prepare data for LLM
+      const description = currentIssueDetails?.description ? 
+        adfToText(currentIssueDetails.description) : 
+        "No description available";
+      
+      const issueData = {
+        key: contextMenuNode.data.key,
+        summary: contextMenuNode.data.summary,
+        issue_type: contextMenuNode.data.issue_type,
+        status: contextMenuNode.data.status,
+        description: description
+      };
+      
+      console.log('Sending issue data to generate test case:', issueData);
+      
+      // API call to backend to generate test case
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || ''}/api/jira/generate-test-case`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ issueData }),
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to generate test case: ${errorText}`);
+      }
+      
+      const testCase = await response.json();
+      console.log('Generated test case:', testCase);
+      
+      // Set the generated test case
+      setGeneratedTestCase(testCase);
+      
+    } catch (error) {
+      console.error('Error generating test case:', error);
+      alert(`Failed to generate test case: ${error.message}`);
+    } finally {
+      setIsGeneratingTestCase(false);
+    }
+  }, [contextMenuNode, handleContextMenuClose, issueDetails]);
   
   // Show test case status
   const handleShowTestStatus = useCallback(() => {
     if (!contextMenuNode) return;
     
-    // Here you would implement the logic to show test case status
-    // For now, we'll just show an alert
-    alert(`Test status for ${contextMenuNode.data.key}: No test cases found`);
+    // Set the current node as selected to show details
+    setSelectedNode(contextMenuNode);
+    
+    // Show the test case status modal
+    setShowTestCaseStatus(true);
     
     // Close the context menu
     handleContextMenuClose();
@@ -1207,11 +1300,13 @@ const JiraVisualization = ({ data }) => {
                   <Tabs 
                     value={detailsTabValue} 
                     onChange={(e, newValue) => setDetailsTabValue(newValue)} 
-                    variant="fullWidth"
+                    variant="scrollable"
+                    scrollButtons="auto"
                   >
                     <Tab label="Overview" />
                     <Tab label="Description" />
                     <Tab label="JSON" />
+                    {showCreateTestCase && <Tab label="Test Case" />}
                   </Tabs>
                 </Box>
                 
@@ -1434,6 +1529,162 @@ const JiraVisualization = ({ data }) => {
                     </Stack>
                   </Box>
                 )}
+                
+                {/* Test Case Tab */}
+                {showCreateTestCase && detailsTabValue === 3 && (
+                  <Box sx={{ p: 2 }}>
+                    <Typography variant="subtitle1" fontWeight="bold" color="primary" gutterBottom>
+                      Generated Test Case for {selectedNode.data.key}
+                    </Typography>
+                    
+                    {isGeneratingTestCase ? (
+                      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', p: 4 }}>
+                        <CircularProgress size={40} />
+                        <Typography variant="body1" sx={{ mt: 2 }}>
+                          Generating test case using AI...
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
+                          This may take a few moments
+                        </Typography>
+                      </Box>
+                    ) : generatedTestCase ? (
+                      <Box>
+                        <Box sx={{ 
+                          p: 2, 
+                          mb: 3, 
+                          border: '1px solid #e0e0e0', 
+                          borderRadius: 1,
+                          backgroundColor: '#f9f9f9'
+                        }}>
+                          <Typography variant="subtitle2" color="text.secondary">
+                            Test Summary
+                          </Typography>
+                          <Typography variant="body1" gutterBottom>
+                            {generatedTestCase.summary}
+                          </Typography>
+                          
+                          <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 2 }}>
+                            Description
+                          </Typography>
+                          <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                            {generatedTestCase.description}
+                          </Typography>
+                          
+                          <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 2 }}>
+                            Precondition
+                          </Typography>
+                          <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                            {generatedTestCase.precondition}
+                          </Typography>
+                          
+                          <Grid container spacing={2} sx={{ mt: 1 }}>
+                            <Grid item xs={6}>
+                              <Typography variant="subtitle2" color="text.secondary">
+                                Test Type
+                              </Typography>
+                              <Typography variant="body2">
+                                {generatedTestCase.type}
+                              </Typography>
+                            </Grid>
+                            <Grid item xs={6}>
+                              <Typography variant="subtitle2" color="text.secondary">
+                                Priority
+                              </Typography>
+                              <Typography variant="body2">
+                                {generatedTestCase.priority}
+                              </Typography>
+                            </Grid>
+                          </Grid>
+                        </Box>
+                        
+                        <Typography variant="subtitle1" gutterBottom>
+                          Test Steps
+                        </Typography>
+                        
+                        {generatedTestCase.steps.map((step, index) => (
+                          <Box 
+                            key={index}
+                            sx={{ 
+                              p: 2, 
+                              mb: 2, 
+                              border: '1px solid #e0e0e0', 
+                              borderRadius: 1
+                            }}
+                          >
+                            <Typography variant="subtitle2" gutterBottom>
+                              Step {index + 1}
+                            </Typography>
+                            
+                            <Box sx={{ ml: 2 }}>
+                              <Typography variant="body2" color="text.secondary">
+                                Action
+                              </Typography>
+                              <Typography variant="body2" gutterBottom>
+                                {step.step}
+                              </Typography>
+                              
+                              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                Expected Result
+                              </Typography>
+                              <Typography variant="body2" gutterBottom>
+                                {step.expected}
+                              </Typography>
+                              
+                              {step.data && (
+                                <>
+                                  <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                    Test Data
+                                  </Typography>
+                                  <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                                    {step.data}
+                                  </Typography>
+                                </>
+                              )}
+                            </Box>
+                          </Box>
+                        ))}
+                        
+                        <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
+                          <Button 
+                            variant="contained" 
+                            color="primary"
+                            onClick={() => {
+                              // Here you would implement saving the test case to Xray/JIRA
+                              alert('Test case would be saved to Xray/JIRA');
+                            }}
+                          >
+                            Save to Xray
+                          </Button>
+                          <Button 
+                            variant="outlined" 
+                            color="primary"
+                            onClick={() => {
+                              setShowCreateTestCase(false);
+                              setGeneratedTestCase(null);
+                              setDetailsTabValue(0); // Switch back to overview tab
+                            }}
+                          >
+                            Discard
+                          </Button>
+                        </Stack>
+                      </Box>
+                    ) : (
+                      <Box sx={{ textAlign: 'center', p: 4 }}>
+                        <Typography variant="body1">
+                          No test case generated yet.
+                        </Typography>
+                        <Button 
+                          variant="contained" 
+                          color="primary"
+                          sx={{ mt: 2 }}
+                          onClick={handleCreateTestCase}
+                        >
+                          Generate Test Case
+                        </Button>
+                      </Box>
+                    )}
+                  </Box>
+                )}
               </Paper>
             )}
           </Box>
@@ -1614,6 +1865,13 @@ const JiraVisualization = ({ data }) => {
           <ListItemText>Show Test Case Status</ListItemText>
         </MenuItem>
       </Menu>
+      
+      {/* Test Case Status Modal */}
+      <TestCaseStatusModal
+        open={showTestCaseStatus}
+        onClose={() => setShowTestCaseStatus(false)}
+        issueData={contextMenuNode?.data}
+      />
     </Container>
   );
 };

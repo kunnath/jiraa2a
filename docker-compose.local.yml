@@ -14,6 +14,7 @@ services:
       - HOST=0.0.0.0
       - PORT=8000
       - OLLAMA_API_BASE=http://host.docker.internal:11434
+      - DOCKER_CONTAINER=true
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

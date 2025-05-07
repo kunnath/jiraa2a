@@ -1,10 +1,11 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import httpx
 import base64
 import os
-from typing import Optional, List, Dict, Any
+import json
+from typing import Optional, List, Dict, Any, Union
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -521,3 +522,236 @@ async def get_issue_details(request: IssueDetailsRequest):
         raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing JIRA data: {str(e)}")
+
+class IssueForTestCase(BaseModel):
+    key: str
+    summary: str
+    issue_type: str
+    status: str
+    description: str
+
+class TestCaseRequest(BaseModel):
+    issueData: IssueForTestCase
+
+class TestStep(BaseModel):
+    step: str
+    expected: str
+    data: Optional[str] = None
+
+class TestCase(BaseModel):
+    summary: str
+    description: str
+    precondition: str
+    type: str
+    priority: str
+    steps: List[TestStep]
+    related_issue: str
+    
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "summary": "Test login functionality",
+                    "description": "Verify that users can log in with valid credentials",
+                    "precondition": "User account exists in the system",
+                    "type": "Functional",
+                    "priority": "High",
+                    "steps": [
+                        {
+                            "step": "Navigate to login page",
+                            "expected": "Login form is displayed",
+                            "data": None
+                        }
+                    ],
+                    "related_issue": "PROJ-123"
+                }
+            ]
+        }
+    }
+
+@app.post("/api/jira/generate-test-case")
+async def generate_test_case(request: TestCaseRequest):
+    """Generate a test case in XRay format using Ollama LLM"""
+    try:
+        # Construct prompt for Ollama
+        system_prompt = """You are an expert test case generator for XRay test management within JIRA.
+        Given a JIRA issue (which could be a user story, bug, or requirement), generate a comprehensive test case in XRay format.
+        
+        The test case should include:
+        1. A summary that clearly indicates what is being tested
+        2. A description explaining the test's purpose
+        3. Any preconditions that must be met before testing
+        4. Test type (e.g., Functional, Integration, Performance)
+        5. Priority (High, Medium, Low)
+        6. Clear, step-by-step test steps where each step has:
+           - An action to perform
+           - The expected result for that action
+           - Any test data needed (optional)
+        
+        Format the response as a valid JSON object with the following structure:
+        {
+            "summary": "Test case summary",
+            "description": "Detailed description of what is being tested",
+            "precondition": "Any required preconditions",
+            "type": "Functional|Integration|Performance|Security|Usability",
+            "priority": "High|Medium|Low",
+            "steps": [
+                {
+                    "step": "Step 1 action",
+                    "expected": "Expected result",
+                    "data": "Test data (if applicable)"
+                },
+                ...additional steps...
+            ]
+        }
+        
+        Respond ONLY with valid JSON. Do not include any additional text, markdown code blocks, or explanation.
+        """
+        
+        # Get issue data
+        issue_data = request.issueData.dict()
+        
+        # Create user prompt
+        user_prompt = f"""
+        Please generate a test case in XRay format for the following JIRA issue:
+        
+        Issue Key: {issue_data['key']}
+        Summary: {issue_data['summary']}
+        Issue Type: {issue_data['issue_type']}
+        Status: {issue_data['status']}
+        Description: {issue_data['description']}
+        
+        Generate a comprehensive test case with at least 3-5 test steps.
+        """
+        
+        # First attempt - try with deepseek-r1:8b model
+        try:
+            # Get the Ollama API base URL from environment variables or use default
+            ollama_api_base = os.getenv("OLLAMA_API_BASE", "http://localhost:11434")
+            # Use localhost when running locally, or host.docker.internal when in Docker
+            if ollama_api_base == "http://localhost:11434" and os.environ.get("DOCKER_CONTAINER", "false") == "true":
+                ollama_api_base = "http://host.docker.internal:11434"
+                
+            ollama_endpoint = f"{ollama_api_base}/api/generate"
+            print(f"Connecting to Ollama at: {ollama_endpoint}")
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    ollama_endpoint,
+                    json={
+                        "model": "deepseek-r1:8b",
+                        "prompt": user_prompt,
+                        "system": system_prompt,
+                        "stream": False,
+                        "temperature": 0.7,
+                        "format": "json"  # Request JSON format
+                    }
+                )
+                
+                if response.status_code != 200:
+                    raise HTTPException(status_code=response.status_code, 
+                                      detail=f"Ollama API error: {response.text}")
+                
+                result = response.json()
+        
+        except Exception as e:
+            # If first model fails, provide a fallback test case directly
+            print(f"Error with primary model, using fallback: {str(e)}")
+            
+            # Create a fallback test case
+            test_case = TestCase(
+                summary=f"Test Case for {issue_data['key']}: {issue_data['summary']}",
+                description=f"This test verifies the functionality described in {issue_data['key']}",
+                precondition="User is logged in to the system with appropriate permissions",
+                type="Functional",
+                priority="Medium",
+                related_issue=issue_data['key'],
+                steps=[
+                    TestStep(
+                        step="Navigate to the relevant page/module",
+                        expected="Page loads successfully with all required elements"
+                    ),
+                    TestStep(
+                        step="Perform the main action described in the issue",
+                        expected="System processes the action correctly"
+                    ),
+                    TestStep(
+                        step="Verify the results",
+                        expected="Results match the expected outcome as described in the issue requirements"
+                    ),
+                    TestStep(
+                        step="Test edge cases and error scenarios",
+                        expected="System handles edge cases gracefully with appropriate error messages"
+                    )
+                ]
+            )
+            
+            return test_case.dict()
+            
+        # Process the LLM response
+        try:
+            response_text = result.get("response", "")
+            
+            # Clean up the response to handle various formats
+            # First try to parse as-is (direct JSON)
+            try:
+                test_case_data = json.loads(response_text)
+            except json.JSONDecodeError:
+                # If direct parsing fails, try to extract JSON from markdown
+                if "```json" in response_text:
+                    response_text = response_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in response_text:
+                    response_text = response_text.split("```")[1].split("```")[0].strip()
+                
+                # Try parsing again
+                test_case_data = json.loads(response_text)
+            
+            # Add the related issue
+            test_case_data["related_issue"] = issue_data["key"]
+            
+            # Convert to our model and validate
+            test_case = TestCase(**test_case_data)
+            
+            # Return the validated test case
+            return test_case.dict()
+        except json.JSONDecodeError as e:
+            # If JSON parsing fails, create a fallback test case
+            print(f"Failed to parse LLM response as JSON: {str(e)}")
+            print(f"LLM Response: {response_text}")
+            
+            # Create a fallback test case
+            test_case = TestCase(
+                summary=f"Test Case for {issue_data['key']}: {issue_data['summary']}",
+                description=f"This test verifies the functionality described in {issue_data['key']}",
+                precondition="User is logged in to the system with appropriate permissions",
+                type="Functional",
+                priority="Medium",
+                related_issue=issue_data['key'],
+                steps=[
+                    TestStep(
+                        step="Navigate to the relevant page/module",
+                        expected="Page loads successfully with all required elements"
+                    ),
+                    TestStep(
+                        step="Perform the main action described in the issue",
+                        expected="System processes the action correctly"
+                    ),
+                    TestStep(
+                        step="Verify the results",
+                        expected="Results match the expected outcome as described in the issue requirements"
+                    ),
+                    TestStep(
+                        step="Test edge cases and error scenarios",
+                        expected="System handles edge cases gracefully with appropriate error messages"
+                    )
+                ]
+            )
+            
+            return test_case.dict()
+            
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=500, 
+                           detail=f"Error connecting to Ollama LLM service: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, 
+                           detail=f"Unexpected error generating test case: {str(e)}")
