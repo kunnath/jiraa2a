@@ -111,21 +111,33 @@ const JiraForm = ({ onVisualizationData }) => {
       // Save credentials to session storage 
       // Note: In a production app, you would handle this more securely
       // This is only for demonstration purposes to enable the description feature
-      sessionStorage.setItem('jiraFormData', JSON.stringify(formData));
+      sessionStorage.setItem('jiraCredentials', JSON.stringify({
+        username: formData.username,
+        api_token: formData.api_token,
+        base_url: formData.base_url,
+        project_id: formData.project_id
+      }));
       
-      const data = await apiService.visualizeJira(formData);
-      console.log('Received visualization data:', data);
-      
-      if (!data || !data.nodes || !data.edges) {
-        throw new Error('Invalid data format received from API');
+      // If central_jira_id is provided, visualize immediately
+      if (formData.central_jira_id && formData.central_jira_id.trim()) {
+        const data = await apiService.visualizeJira(formData);
+        console.log('Received visualization data:', data);
+        
+        if (!data || !data.nodes || !data.edges) {
+          throw new Error('Invalid data format received from API');
+        }
+        
+        if (data.nodes.length === 0) {
+          throw new Error('No JIRA issues found for visualization');
+        }
+        
+        onVisualizationData(data);
+        navigate('/visualization');
+      } else {
+        // If no central_jira_id, just navigate to visualization page
+        // where user can input it later
+        navigate('/visualization');
       }
-      
-      if (data.nodes.length === 0) {
-        throw new Error('No JIRA issues found for visualization');
-      }
-      
-      onVisualizationData(data);
-      navigate('/visualization');
     } catch (err) {
       console.error('Visualization error:', err);
       setError(err.message || 'Failed to fetch JIRA data');
@@ -135,8 +147,10 @@ const JiraForm = ({ onVisualizationData }) => {
   };
 
   const validateForm = () => {
-    // Simple validation
-    for (const key in formData) {
+    // Required fields (except central_jira_id which is now optional)
+    const requiredFields = ['username', 'api_token', 'base_url', 'project_id'];
+    
+    for (const key of requiredFields) {
       if (!formData[key].trim()) {
         setError(`Please fill in the ${key.replace('_', ' ')}`);
         return false;
@@ -243,15 +257,14 @@ const JiraForm = ({ onVisualizationData }) => {
           />
           <TextField
             margin="normal"
-            required
             fullWidth
             id="central_jira_id"
-            label="Central JIRA ID"
+            label="Central JIRA ID (Optional)"
             name="central_jira_id"
             placeholder="e.g. PROJECT-123"
             value={formData.central_jira_id}
             onChange={handleChange}
-            helperText="This will be the central node in the visualization"
+            helperText="Can be provided later in the visualization page"
           />
           
           {error && (

@@ -62,6 +62,7 @@ import TextRotateVerticalIcon from '@mui/icons-material/TextRotateVertical';
 import TextRotationNoneIcon from '@mui/icons-material/TextRotationNone';
 import CreateIcon from '@mui/icons-material/Create';
 import InfoIcon from '@mui/icons-material/Info';
+import FileCopyIcon from '@mui/icons-material/FileCopy';
 import { toPng, toJpeg } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 
@@ -70,7 +71,9 @@ import { Pie, Bar } from 'react-chartjs-2';
 import CustomNode from './CustomNode';
 import { apiService } from '../services/apiService';
 import { adfToText, formatJiraForLLM } from '../utils/jiraFormatter';
+import extractDescription from '../utils/descriptionExtractor';
 import TestCaseStatusModal from './TestCaseStatusModal';
+import TestCaseGenerationModal from './TestCaseGenerationModal';
 
 // Register Chart.js components
 ChartJS.register(ArcElement, ChartTooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
@@ -282,7 +285,15 @@ const JiraVisualization = ({ data }) => {
   const [generatedTestCase, setGeneratedTestCase] = useState(null);
   const [isGeneratingTestCase, setIsGeneratingTestCase] = useState(false);
   const [showTestCaseStatus, setShowTestCaseStatus] = useState(false);
+  const [showGenerationModal, setShowGenerationModal] = useState(false);
+  const [testCaseGenerationError, setTestCaseGenerationError] = useState(null);
 
+  // States for JIRA connection and Central JIRA ID input
+  const [jiraCredentials, setJiraCredentials] = useState(null);
+  const [centralJiraId, setCentralJiraId] = useState('');
+  const [showJiraIdInput, setShowJiraIdInput] = useState(false);
+  const [loadingVisualization, setLoadingVisualization] = useState(false);
+  
   useEffect(() => {
     console.log("JiraVisualization received data:", data);
     
@@ -330,6 +341,16 @@ const JiraVisualization = ({ data }) => {
         return;
       }
       
+      // Load any saved positions from session storage
+      const savedPositions = JSON.parse(sessionStorage.getItem('nodePositions') || '{}');
+      const nodesWithSavedPositions = layoutedNodes.map(node => {
+        if (savedPositions[node.id]) {
+          // Use saved position if available
+          return { ...node, position: savedPositions[node.id] };
+        }
+        return node;
+      });
+      
       // Enhance edges with custom type and colors
       const enhancedEdges = layoutedEdges.map(edge => {
         if (!edge) return null;
@@ -343,14 +364,27 @@ const JiraVisualization = ({ data }) => {
         };
       }).filter(Boolean); // Filter out any null values
       
-      setNodes(layoutedNodes);
+      setNodes(nodesWithSavedPositions);
       setEdges(enhancedEdges);
-      setFilteredNodes(layoutedNodes);
+      setFilteredNodes(nodesWithSavedPositions);
     } catch (err) {
       console.error("Error processing visualization data:", err);
       navigate('/');
     }
   }, [data, navigate, layoutDirection]);
+
+  // Load saved JIRA credentials from session storage
+  useEffect(() => {
+    const savedCredentials = sessionStorage.getItem('jiraCredentials');
+    if (savedCredentials) {
+      setJiraCredentials(JSON.parse(savedCredentials));
+    }
+    
+    // If we have credentials but no data, show the JIRA ID input
+    if (savedCredentials && (!data || !data.nodes || data.nodes.length === 0)) {
+      setShowJiraIdInput(true);
+    }
+  }, [data]);
 
   // Handle tab change
   const handleTabChange = (event, newValue) => {
@@ -368,6 +402,130 @@ const JiraVisualization = ({ data }) => {
     (changes) => setEdges((eds) => applyEdgeChanges(changes, eds)),
     []
   );
+
+  // Handle node drag start
+  const onNodeDragStart = useCallback((event, node) => {
+    // Set node as selected when starting to drag
+    setSelectedNode(node);
+    
+    // Highlight the node being dragged and increase z-index for better dragging experience
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (n.id === node.id) {
+          return {
+            ...n,
+            style: { 
+              ...n.style, 
+              zIndex: 1000, 
+              boxShadow: '0 0 10px rgba(0, 0, 255, 0.5)',
+              cursor: 'grabbing',
+              transform: 'scale(1.02)'
+            },
+          };
+        }
+        return n;
+      })
+    );
+    
+    // Store original position for potential snap back if needed
+    node._originalPosition = { ...node.position };
+  }, []);
+
+  // Handle node drag
+  const onNodeDrag = useCallback((event, node) => {
+    // Update connected edges in real-time for smoother animation
+    if (edges.length > 0) {
+      const connectedEdges = edges.filter(
+        (edge) => edge.source === node.id || edge.target === node.id
+      );
+      
+      if (connectedEdges.length > 0) {
+        // Force a re-render of edges by toggling a property
+        setEdges((eds) =>
+          eds.map((ed) => {
+            if (ed.source === node.id || ed.target === node.id) {
+              // Add animation to connected edges during drag
+              return { 
+                ...ed, 
+                updatedAt: Date.now(),
+                style: { 
+                  ...ed.style, 
+                  strokeWidth: 2, 
+                  stroke: ed.source === node.id ? '#3498db' : '#2ecc71' 
+                } 
+              };
+            }
+            return ed;
+          })
+        );
+      }
+    }
+    
+    // Update node position in filtered nodes for smooth rendering
+    setFilteredNodes((fNodes) =>
+      fNodes.map((n) => {
+        if (n.id === node.id) {
+          return { ...n, position: node.position };
+        }
+        return n;
+      })
+    );
+  }, [edges]);
+
+  // Handle node drag stop
+  const onNodeDragStop = useCallback((event, node) => {
+    // Store the updated node positions to make them persistent
+    // This keeps the nodes at their dragged positions rather than resetting on re-render
+    setNodes((nds) =>
+      nds.map((n) => {
+        if (n.id === node.id) {
+          // Remove highlighting and update position
+          return {
+            ...n,
+            position: node.position,
+            style: { 
+              ...n.style, 
+              zIndex: null, 
+              boxShadow: null,
+              cursor: 'grab',
+              transform: null
+            },
+          };
+        }
+        return n;
+      })
+    );
+    
+    // Reset edge styling to normal
+    setEdges((eds) =>
+      eds.map((ed) => {
+        if (ed.source === node.id || ed.target === node.id) {
+          const { updatedAt, style, ...restEdge } = ed;
+          return restEdge;
+        }
+        return ed;
+      })
+    );
+    
+    // Save positions to session storage for persistence across page reloads
+    try {
+      const savedPositions = JSON.parse(sessionStorage.getItem('nodePositions') || '{}');
+      savedPositions[node.id] = node.position;
+      sessionStorage.setItem('nodePositions', JSON.stringify(savedPositions));
+    } catch (error) {
+      console.error('Error saving node positions to session storage:', error);
+    }
+    
+    // After dragging, update the filtered nodes to maintain the current view
+    setFilteredNodes((fNodes) =>
+      fNodes.map((n) => {
+        if (n.id === node.id) {
+          return { ...n, position: node.position };
+        }
+        return n;
+      })
+    );
+  }, []);
 
   // Advanced search states
   const [advancedSearchActive, setAdvancedSearchActive] = useState(false);
@@ -638,6 +796,73 @@ const JiraVisualization = ({ data }) => {
     }
   };
 
+  // Export test case as CSV
+  const downloadTestCaseAsCSV = (testCase) => {
+    if (!testCase) {
+      console.error('No test case to download');
+      return;
+    }
+    
+    try {
+      // Create CSV header row for the basic test case information
+      const headers = ['Test Case ID', 'Title', 'Type', 'Priority', 'Summary', 'Description', 'Precondition'];
+      
+      // Format the issue key referenced in the test case as a test case ID
+      const testCaseId = testCase.issueKey ? `TC-${testCase.issueKey.replace(/[^0-9]/g, '')}` : 
+                        `TC-${Date.now().toString().substring(6)}`;
+      
+      // Create the basic test case information row
+      const testCaseInfo = [
+        testCaseId,
+        testCase.title || 'Untitled Test Case',
+        testCase.type || 'Functional',
+        testCase.priority || 'Medium',
+        testCase.summary || '',
+        (testCase.description || '').replace(/"/g, '""'), // Escape quotes for CSV
+        (testCase.precondition || '').replace(/"/g, '""') // Escape quotes for CSV
+      ];
+      
+      // Create CSV content for the base test case
+      let csvContent = headers.join(',') + '\n' + testCaseInfo.map(field => `"${field}"`).join(',') + '\n\n';
+      
+      // Add steps section
+      csvContent += 'Step #,Action,Expected Result,Test Data\n';
+      
+      // Add test steps
+      if (Array.isArray(testCase.steps) && testCase.steps.length > 0) {
+        testCase.steps.forEach((step, index) => {
+          const stepData = [
+            index + 1,
+            `"${(step.step || '').replace(/"/g, '""')}"`,
+            `"${(step.expected || '').replace(/"/g, '""')}"`,
+            `"${(step.data || '').replace(/"/g, '""')}"`
+          ];
+          csvContent += stepData.join(',') + '\n';
+        });
+      }
+      
+      // Add metadata at the bottom
+      csvContent += '\nMetadata\n';
+      csvContent += `Generated for,${testCase.issueKey || 'Unknown Issue'}\n`;
+      csvContent += `Generated on,${new Date().toLocaleDateString()}\n`;
+      
+      // Create Blob and download
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `test_case_${testCaseId}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      console.log('Test case downloaded as CSV');
+    } catch (err) {
+      console.error("Error exporting test case as CSV:", err);
+      alert("Failed to export test case as CSV. See console for details.");
+    }
+  };
+
   // Fetch detailed issue information when a node is selected
   const fetchIssueDetails = useCallback(async (node) => {
     if (!node || !node.data || !node.data.key) {
@@ -653,7 +878,7 @@ const JiraVisualization = ({ data }) => {
       const savedData = sessionStorage.getItem('jiraFormData');
       if (!savedData) {
         console.error('No JIRA credentials found');
-        return;
+        return null;
       }
       
       let credentials;
@@ -662,21 +887,23 @@ const JiraVisualization = ({ data }) => {
         // Check for base_url (not baseUrl) since that's the property name used in the form
         if (!credentials || !credentials.base_url) {
           console.error('Invalid JIRA credentials:', credentials);
-          return;
+          return null;
         }
       } catch (error) {
         console.error('Error parsing JIRA credentials:', error);
-        return;
+        return null;
       }
       
       // Call API to get detailed issue information
-      const details = await apiService.getIssueDetails(credentials, node.data.key);
+      const response = await apiService.getIssueDetails(credentials, node.data.key);
       
-      if (!details) {
+      if (!response || !response.success || !response.data) {
         console.error('No details returned for issue:', node.data.key);
-        return;
+        return null;
       }
       
+      // Get the details from the response
+      const details = response.data;
       setIssueDetails(details);
       
       // Format JSON for display
@@ -736,9 +963,13 @@ const JiraVisualization = ({ data }) => {
     // Set the current node as selected to show details
     setSelectedNode(contextMenuNode);
     
+    // Reset any previous generation errors
+    setTestCaseGenerationError(null);
+    
     // Start generating the test case
     setIsGeneratingTestCase(true);
     setShowCreateTestCase(true);
+    setShowGenerationModal(true);
     
     // Switch to test case tab
     setDetailsTabValue(3);
@@ -748,69 +979,214 @@ const JiraVisualization = ({ data }) => {
     if (!currentIssueDetails) {
       try {
         setIsLoadingDetails(true);
-        // Fetch issue details
-        const credentials = JSON.parse(sessionStorage.getItem('jiraCredentials'));
-        if (!credentials) {
-          throw new Error('No JIRA credentials found. Please log in again.');
+        
+        // Fetch issue details using the correct source of credentials
+        let credentials;
+        try {
+          // Try jiraCredentials first (the state variable)
+          if (jiraCredentials) {
+            credentials = jiraCredentials;
+          } else {
+            // Fall back to sessionStorage
+            const savedData = sessionStorage.getItem('jiraFormData');
+            if (!savedData) {
+              throw new Error('No JIRA credentials found. Please log in again.');
+            }
+            
+            credentials = JSON.parse(savedData);
+            if (!credentials || !credentials.base_url) {
+              throw new Error('Invalid JIRA credentials. Please log in again.');
+            }
+          }
+        } catch (credError) {
+          throw new Error(`Failed to get credentials: ${credError.message}`);
         }
         
-        const response = await apiService.getIssueDetails(credentials, contextMenuNode.data.key);
-        
-        if (response.success) {
-          currentIssueDetails = response.data;
-          setIssueDetails(currentIssueDetails);
-          setDetailsJson(JSON.stringify(currentIssueDetails, null, 2));
-        } else {
-          throw new Error(response.error || 'Failed to fetch issue details');
+        // Make the API call with proper error handling
+        try {
+          const response = await apiService.getIssueDetails(credentials, contextMenuNode.data.key);
+          
+          if (response && response.success && response.data) {
+            currentIssueDetails = response.data;
+            setIssueDetails(currentIssueDetails);
+            setDetailsJson(JSON.stringify(currentIssueDetails, null, 2));
+            console.log('Successfully fetched issue details for test case generation');
+          } else {
+            throw new Error(response?.error || 'API returned an invalid response');
+          }
+        } catch (apiError) {
+          throw new Error(`API Error: ${apiError.message}`);
         }
       } catch (error) {
         console.error('Error fetching issue details:', error);
+        setTestCaseGenerationError(`Failed to fetch issue details: ${error.message}`);
+        setIsGeneratingTestCase(false);
+        return; // Exit early if we can't fetch issue details
       } finally {
         setIsLoadingDetails(false);
       }
     }
     
     try {
-      // Prepare data for LLM
-      const description = currentIssueDetails?.description ? 
-        adfToText(currentIssueDetails.description) : 
-        "No description available";
+      // Make sure we have issue details before proceeding
+      if (!currentIssueDetails) {
+        throw new Error('Issue details are not available. Please try again.');
+      }
       
-      const issueData = {
+      // Validate issue details are suitable for test case generation
+      if (!currentIssueDetails.fields) {
+        // Create a fallback fields object to avoid the error
+        console.warn('Issue details missing fields property. Creating fallback structure.');
+        currentIssueDetails.fields = {
+          description: currentIssueDetails.description || '',
+          summary: currentIssueDetails.summary || contextMenuNode.data.summary || '',
+          issuetype: {
+            name: currentIssueDetails.issue_type || contextMenuNode.data.issue_type || 'Story'
+          }
+        };
+      }
+      
+      // Check if issue type is suitable for test case generation
+      const issueType = currentIssueDetails.fields.issuetype?.name?.toLowerCase() || 
+                       contextMenuNode.data.issue_type?.toLowerCase() || '';
+      if (issueType !== 'requirement' && issueType !== 'story' && issueType !== 'task' && issueType !== 'feature') {
+        console.warn(`Issue type '${issueType}' might not be ideal for test case generation. Proceeding anyway.`);
+      }
+      
+      // Extract description using our helper function
+      const description = extractDescription(currentIssueDetails);
+      
+      console.log('Description extracted for test case generation:', 
+        description ? `${description.substring(0, 50)}...` : 'No description found');
+      
+      // Prepare input for the formatter with all available data
+      const formatterInput = {
         key: contextMenuNode.data.key,
-        summary: contextMenuNode.data.summary,
-        issue_type: contextMenuNode.data.issue_type,
-        status: contextMenuNode.data.status,
-        description: description
+        summary: currentIssueDetails.fields.summary || contextMenuNode.data.summary,
+        issue_type: currentIssueDetails.fields.issuetype?.name || contextMenuNode.data.issue_type,
+        status: currentIssueDetails.fields.status?.name || contextMenuNode.data.status,
+        description: description,
+        priority: currentIssueDetails.fields.priority?.name || 'Medium',
+        assignee: currentIssueDetails.fields.assignee?.displayName || 'Unassigned',
+        reporter: currentIssueDetails.fields.reporter?.displayName || 'Unknown',
+        created: currentIssueDetails.fields.created || new Date().toISOString(),
+        components: Array.isArray(currentIssueDetails.fields.components) 
+          ? currentIssueDetails.fields.components.map(c => c.name).join(', ') 
+          : '',
+        labels: Array.isArray(currentIssueDetails.fields.labels) 
+          ? currentIssueDetails.fields.labels.join(', ') 
+          : ''
+      };
+      
+      // Log what we're sending to the formatter
+      console.log('Formatter input with complete details:', formatterInput);
+      
+      // Format data for LLM
+      const formattedData = formatJiraForLLM(formatterInput);
+      
+      // Create a comprehensive issueData object with all possible information
+      const issueData = {
+        key: formattedData.key || contextMenuNode.data.key,
+        summary: formattedData.summary || contextMenuNode.data.summary,
+        issue_type: formattedData.issue_type || contextMenuNode.data.issue_type,
+        status: formattedData.status || contextMenuNode.data.status,
+        description: formattedData.description || description || "No description available",
+        structured_data: {
+          ...formattedData.structured_data,
+          priority: formatterInput.priority,
+          assignee: formatterInput.assignee,
+          reporter: formatterInput.reporter,
+          created: formatterInput.created,
+          components: formatterInput.components,
+          labels: formatterInput.labels
+        },
+        fields: currentIssueDetails.fields // Include the full fields object
       };
       
       console.log('Sending issue data to generate test case:', issueData);
       
       // API call to backend to generate test case
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || ''}/api/jira/generate-test-case`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ issueData }),
-      });
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Failed to generate test case: ${errorText}`);
+      try {
+        const API_URL = `${import.meta.env.VITE_API_BASE_URL || ''}/api/jira/generate-test-case`;
+        console.log(`Making API request to: ${API_URL}`);
+        
+        const response = await fetch(API_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ 
+            issueData: {
+              // Include only the necessary fields to avoid circular references
+              key: issueData.key,
+              summary: issueData.summary,
+              issue_type: issueData.issue_type,
+              status: issueData.status,
+              description: issueData.description,
+              structured_data: issueData.structured_data,
+              // Include a safe subset of fields
+              fields: {
+                summary: issueData.fields?.summary || issueData.summary,
+                description: issueData.fields?.description || issueData.description,
+                issuetype: {
+                  name: issueData.fields?.issuetype?.name || issueData.issue_type
+                },
+                status: {
+                  name: issueData.fields?.status?.name || issueData.status
+                },
+                priority: issueData.fields?.priority,
+                components: issueData.fields?.components
+              }
+            }
+          }),
+        });
+        
+        console.log('Response status:', response.status);
+        
+        if (!response.ok) {
+          let errorDetails;
+          try {
+            // Try to parse as JSON first
+            errorDetails = await response.json();
+            console.error('Error details from API:', errorDetails);
+            throw new Error(`Failed to generate test case: ${errorDetails.message || errorDetails.error || 'Unknown API error'}`);
+          } catch (jsonError) {
+            // If not JSON, get as text
+            const errorText = await response.text();
+            console.error('Error text from API:', errorText);
+            throw new Error(`Failed to generate test case: ${errorText || response.statusText || 'Unknown error'}`);
+          }
+        }
+        
+        const testCase = await response.json();
+        console.log('Generated test case:', testCase);
+        
+        if (!testCase || Object.keys(testCase).length === 0) {
+          throw new Error('Received empty test case from API');
+        }
+        
+        // Log detailed information about the test case structure
+        console.log('Test case generation successful:', {
+          structure: Object.keys(testCase),
+          hasSteps: !!testCase.steps,
+          stepsCount: Array.isArray(testCase.steps) ? testCase.steps.length : 'N/A',
+          title: testCase.title || 'No title',
+          objective: testCase.objective ? `${testCase.objective.substring(0, 30)}...` : 'No objective'
+        });
+        
+        // Set the generated test case
+        setGeneratedTestCase(testCase);
+      } catch (apiCallError) {
+        console.error('API call error:', apiCallError);
+        throw new Error(`API error: ${apiCallError.message}`);
       }
-      
-      const testCase = await response.json();
-      console.log('Generated test case:', testCase);
-      
-      // Set the generated test case
-      setGeneratedTestCase(testCase);
       
     } catch (error) {
       console.error('Error generating test case:', error);
-      alert(`Failed to generate test case: ${error.message}`);
+      setTestCaseGenerationError(`Failed to generate test case: ${error.message}`);
     } finally {
       setIsGeneratingTestCase(false);
+      // Keep the modal open to show either success or error
     }
   }, [contextMenuNode, handleContextMenuClose, issueDetails]);
   
@@ -820,6 +1196,12 @@ const JiraVisualization = ({ data }) => {
     
     // Set the current node as selected to show details
     setSelectedNode(contextMenuNode);
+    
+    // Ensure we have the node data before showing the modal
+    if (!contextMenuNode.data || !contextMenuNode.data.key) {
+      console.error('Cannot show test status: Invalid node data');
+      return;
+    }
     
     // Show the test case status modal
     setShowTestCaseStatus(true);
@@ -969,908 +1351,1034 @@ const JiraVisualization = ({ data }) => {
     }
   });
 
-  return (
-    <Container maxWidth="xl" sx={{ mt: 2, height: 'calc(100vh - 120px)', display: 'flex', flexDirection: 'column' }}>
-      <Paper elevation={3} sx={{ p: 2, mb: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Typography variant="h5" sx={{ fontWeight: 'bold', color: '#3f51b5' }}>
-          JIRA Relationship Visualization
-        </Typography>
-        <Stack direction="row" spacing={2}>
-          <Tooltip title="Return to form">
-            <Button 
-              variant="outlined" 
-              color="primary"
-              onClick={() => navigate('/')}
-            >
-              Back to Form
-            </Button>
-          </Tooltip>
-          <Tooltip title="Export as PNG">
-            <Button 
-              variant="contained" 
-              color="primary" 
-              startIcon={<FileDownloadIcon />}
-              onClick={() => exportImage('png')}
-              disabled={isExporting}
-            >
-              {isExporting ? <CircularProgress size={24} /> : 'Export'}
-            </Button>
-          </Tooltip>
-        </Stack>
-      </Paper>
+  // Function to handle Central JIRA ID submission
+  const handleCentralJiraIdSubmit = async (e) => {
+    e.preventDefault();
+    if (!centralJiraId || !centralJiraId.trim()) {
+      setError('Please enter a Central JIRA ID');
+      return;
+    }
+    
+    setLoadingVisualization(true);
+    setError(null);
+    
+    try {
+      // Create request with credentials and central JIRA ID
+      const requestData = {
+        ...jiraCredentials,
+        central_jira_id: centralJiraId
+      };
       
-      <Paper elevation={3} sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
-        {/* Tabs */}
-        <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-          <Tabs value={tabValue} onChange={handleTabChange} aria-label="visualization tabs">
-            <Tab 
-              icon={<AccountTreeIcon />} 
-              iconPosition="start" 
-              label="Visualization" 
-              id="visualization-tab-0" 
-            />
-            <Tab 
-              icon={<InsertChartIcon />} 
-              iconPosition="start" 
-              label="Analytics" 
-              id="visualization-tab-1" 
-            />
-          </Tabs>
-        </Box>
-        
-        {/* Visualization Tab */}
-        <TabPanel value={tabValue} index={0} sx={{ flexGrow: 1 }}>
-          <Box sx={{ p: 2, display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
-            {/* Search */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <TextField
-                size="small"
-                placeholder="Search issues..."
-                value={searchTerm}
-                onChange={handleSearchChange}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <SearchIcon />
-                    </InputAdornment>
-                  ),
-                }}
-                sx={{ minWidth: '250px' }}
-              />
-              <Tooltip title="Highlight connected issues">
-                <Button 
-                  variant="outlined" 
-                  size="small" 
-                  onClick={performAdvancedSearch}
-                  disabled={!searchTerm}
-                  color={advancedSearchActive ? 'secondary' : 'primary'}
-                >
-                  Highlight Path
-                </Button>
-              </Tooltip>
-              {advancedSearchActive && (
-                <Chip 
-                  label={`${highlightedNodes.size} issues highlighted`} 
-                  color="secondary" 
-                  size="small" 
-                  onDelete={() => {
-                    setAdvancedSearchActive(false);
-                    setHighlightedNodes(new Set());
-                    setFilteredNodes(nodes);
-                  }}
-                />
-              )}
-            </Box>
-            
-            {/* Filters */}
-            <Box sx={{ display: 'flex', gap: 1 }}>
-              <Tooltip title="Central Issue">
-                <Chip
-                  label="Central"
-                  color={selectedNodeTypes.includes('central') ? 'primary' : 'default'}
-                  onClick={() => handleNodeTypeFilterChange('central')}
-                  sx={{ cursor: 'pointer' }}
-                />
-              </Tooltip>
-              <Tooltip title="Parent Issues">
-                <Chip
-                  icon={<AccountTreeIcon />}
-                  label={`Parents (${issueStats.parents || 0})`}
-                  color={selectedNodeTypes.includes('parent') ? 'primary' : 'default'}
-                  onClick={() => handleNodeTypeFilterChange('parent')}
-                  sx={{ cursor: 'pointer' }}
-                />
-              </Tooltip>
-              <Tooltip title="Requirements">
-                <Chip
-                  icon={<AssignmentIcon />}
-                  label={`Requirements (${issueStats.requirements})`}
-                  color={selectedNodeTypes.includes('requirement') ? 'primary' : 'default'}
-                  onClick={() => handleNodeTypeFilterChange('requirement')}
-                  sx={{ cursor: 'pointer' }}
-                />
-              </Tooltip>
-              <Tooltip title="Tests">
-                <Chip
-                  icon={<CheckCircleOutlineIcon />}
-                  label={`Tests (${issueStats.tests})`}
-                  color={selectedNodeTypes.includes('test') ? 'primary' : 'default'}
-                  onClick={() => handleNodeTypeFilterChange('test')}
-                  sx={{ cursor: 'pointer' }}
-                />
-              </Tooltip>
-              <Tooltip title="Defects">
-                <Chip
-                  icon={<BugReportIcon />}
-                  label={`Defects (${issueStats.defects})`}
-                  color={selectedNodeTypes.includes('defect') ? 'primary' : 'default'}
-                  onClick={() => handleNodeTypeFilterChange('defect')}
-                  sx={{ cursor: 'pointer' }}
-                />
-              </Tooltip>
-              <Tooltip title="Other Issues">
-                <Chip
-                  label={`Other (${issueStats.other})`}
-                  color={selectedNodeTypes.includes('related') ? 'primary' : 'default'}
-                  onClick={() => handleNodeTypeFilterChange('related')}
-                  sx={{ cursor: 'pointer' }}
-                />
-              </Tooltip>
-            </Box>
-            
-            {/* Layout Direction */}
-            <Box>
-              <Tooltip title="Vertical Layout">
-                <IconButton 
-                  color={layoutDirection === 'TB' ? 'primary' : 'default'} 
-                  onClick={() => changeLayoutDirection('TB')}
-                >
-                  <TextRotateVerticalIcon />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title="Horizontal Layout">
-                <IconButton 
-                  color={layoutDirection === 'LR' ? 'primary' : 'default'} 
-                  onClick={() => changeLayoutDirection('LR')}
-                >
-                  <TextRotationNoneIcon />
-                </IconButton>
-              </Tooltip>
-            </Box>
+      const visualizationData = await apiService.visualizeJira(requestData);
+      
+      if (!visualizationData || !visualizationData.nodes || visualizationData.nodes.length === 0) {
+        throw new Error('No JIRA issues found for visualization');
+      }
+      
+      // Update the session storage with this data
+      sessionStorage.setItem('jiraVisualizationData', JSON.stringify(visualizationData));
+      
+      // Reload the page to show the visualization
+      window.location.reload();
+    } catch (err) {
+      console.error('Visualization error:', err);
+      setError(err.message || 'Failed to fetch JIRA data');
+    } finally {
+      setLoadingVisualization(false);
+    }
+  };
 
-            {/* Export Options */}
-            <Box sx={{ marginLeft: 'auto' }}>
-              <Tooltip title="Export as PNG">
-                <IconButton onClick={() => exportImage('png')}>
-                  <ImageIcon />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title="Export as JPEG">
-                <IconButton onClick={() => exportImage('jpeg')}>
-                  <SaveAltIcon />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title="Export as PDF">
-                <IconButton onClick={() => exportImage('pdf')}>
-                  <PictureAsPdfIcon />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title="Export data as CSV">
-                <IconButton onClick={exportCSV}>
-                  <FileDownloadIcon />
-                </IconButton>
-              </Tooltip>
-              <Tooltip title="Export as CSV">
-                <IconButton onClick={exportCSV}>
-                  <FileDownloadIcon />
-                </IconButton>
-              </Tooltip>
+  return (
+    <Container maxWidth={false} sx={{ height: 'calc(100vh - 64px)', p: 0 }}>
+      {/* Show Central JIRA ID input form if needed */}
+      {showJiraIdInput && (
+        <Paper elevation={3} sx={{ p: 4, mt: 4, mx: 'auto', maxWidth: 'md' }}>
+          <Typography variant="h4" component="h1" gutterBottom>
+            Enter Central JIRA ID
+          </Typography>
+          <Typography variant="body1" color="text.secondary" paragraph>
+            Your JIRA connection is established. Please enter a Central JIRA ID to visualize relationships.
+          </Typography>
+          
+          <Box component="form" onSubmit={handleCentralJiraIdSubmit} noValidate sx={{ mt: 3 }}>
+            <TextField
+              margin="normal"
+              required
+              fullWidth
+              id="central_jira_id"
+              label="Central JIRA ID"
+              name="central_jira_id"
+              placeholder="e.g. PROJECT-123"
+              value={centralJiraId}
+              onChange={(e) => setCentralJiraId(e.target.value)}
+              helperText="This will be the central node in the visualization"
+              autoFocus
+              InputProps={{
+                sx: { fontSize: '1.1rem', letterSpacing: '0.05rem' }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  handleCentralJiraIdSubmit(e);
+                }
+              }}
+            />
+            
+            {error && (
+              <Alert severity="error" sx={{ mt: 2 }}>
+                {error}
+              </Alert>
+            )}
+            
+            <Box sx={{ mt: 3 }}>
+              <Button
+                type="submit"
+                variant="contained"
+                color="primary"
+                disabled={loadingVisualization}
+              >
+                Visualize
+              </Button>
+              {loadingVisualization && <CircularProgress size={24} sx={{ ml: 2 }} />}
             </Box>
           </Box>
-          
-          <Divider />
-          
-          {/* The Flow Chart */}
-          <Box ref={flowRef} className="reactflow-wrapper" sx={{ flexGrow: 1, position: 'relative', display: 'flex' }}>
-            <Box sx={{ flexGrow: 1, position: 'relative' }}>
-              <ReactFlow
-                nodes={displayedNodes}
-                edges={displayedEdges}
-                onNodesChange={onNodesChange}
-                onEdgesChange={onEdgesChange}
-                onNodeClick={onNodeClick}
-                onNodeContextMenu={onNodeContextMenu}
-                nodeTypes={nodeTypes}
-                edgeTypes={edgeTypes}
-                fitView
-                attributionPosition="bottom-right"
-              >
-                <Background />
-                <Controls />
-                <MiniMap />
-                
-                {/* Floating Controls Panel */}
-                <Panel position="top-right">
-                  <Paper elevation={3} sx={{ p: 1, borderRadius: 2 }}>
-                    <Stack direction="row" spacing={1}>
-                      <Tooltip title="Zoom In">
-                        <IconButton size="small" onClick={zoomIn}>
-                          <ZoomInIcon />
-                        </IconButton>
-                      </Tooltip>
-                      <Tooltip title="Zoom Out">
-                        <IconButton size="small" onClick={zoomOut}>
-                          <ZoomOutIcon />
-                        </IconButton>
-                      </Tooltip>
-                      <Tooltip title="Reset View">
-                        <IconButton size="small" onClick={resetView}>
-                          <RestartAltIcon />
-                        </IconButton>
-                      </Tooltip>
-                    </Stack>
-                  </Paper>
-                </Panel>
+        </Paper>
+      )}
 
-                {/* Legend Panel */}
-                <Panel position="bottom-right" className="legend-panel">
-                  <Paper elevation={3} sx={{ p: 2, borderRadius: 2, maxWidth: 250 }}>
-                    <Typography variant="subtitle2" gutterBottom>Legend</Typography>
-                    <Divider sx={{ mb: 1 }} />
-                    
-                    <Typography variant="body2" sx={{ fontWeight: 'bold', mt: 1 }}>Node Types:</Typography>
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mt: 0.5 }}>
-                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                        <Box sx={{ width: 16, height: 16, backgroundColor: '#ff9800', borderRadius: 1 }} />
-                        <Typography variant="body2">Central Issue</Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                        <Box sx={{ width: 16, height: 16, backgroundColor: '#9c27b0', borderRadius: 1 }} />
-                        <Typography variant="body2">Parent Issue</Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                        <Box sx={{ width: 16, height: 16, backgroundColor: '#4dabf5', borderRadius: 1 }} />
-                        <Typography variant="body2">Requirement</Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                        <Box sx={{ width: 16, height: 16, backgroundColor: '#66bb6a', borderRadius: 1 }} />
-                        <Typography variant="body2">Test</Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                        <Box sx={{ width: 16, height: 16, backgroundColor: '#f44336', borderRadius: 1 }} />
-                        <Typography variant="body2">Defect</Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                        <Box sx={{ width: 16, height: 16, backgroundColor: '#9e9e9e', borderRadius: 1 }} />
-                        <Typography variant="body2">Other</Typography>
-                      </Box>
-                    </Box>
-                    
-                    <Typography variant="body2" sx={{ fontWeight: 'bold', mt: 1 }}>Edge Types:</Typography>
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mt: 0.5 }}>
-                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                        <Box sx={{ width: 20, height: 2, backgroundColor: '#f44336' }} />
-                        <Typography variant="body2">Blocks/Depends</Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                        <Box sx={{ width: 20, height: 2, backgroundColor: '#66bb6a' }} />
-                        <Typography variant="body2">Tests/Verifies</Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                        <Box sx={{ width: 20, height: 2, backgroundColor: '#4dabf5' }} />
-                        <Typography variant="body2">Implements/Requires</Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                        <Box sx={{ width: 20, height: 2, backgroundColor: '#555' }} />
-                        <Typography variant="body2">Other Relationship</Typography>
-                      </Box>
-                    </Box>
-                  </Paper>
-                </Panel>
-              </ReactFlow>
+      {/* Main Visualization Content */}
+      {!showJiraIdInput && (
+        <Paper elevation={3} sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', p: 2 }}>
+          {/* Tabs */}
+          <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+            <Tabs value={tabValue} onChange={handleTabChange} aria-label="visualization tabs">
+              <Tab 
+                icon={<AccountTreeIcon />} 
+                iconPosition="start" 
+                label="Visualization" 
+                id="visualization-tab-0" 
+              />
+              <Tab 
+                icon={<InsertChartIcon />} 
+                iconPosition="start" 
+                label="Analytics" 
+                id="visualization-tab-1" 
+              />
+            </Tabs>
+          </Box>
+          
+          {/* Visualization Tab */}
+          <TabPanel value={tabValue} index={0} sx={{ flexGrow: 1 }}>
+            <Box sx={{ p: 2, display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
+              {/* Search */}
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <TextField
+                  size="small"
+                  placeholder="Search issues..."
+                  value={searchTerm}
+                  onChange={handleSearchChange}
+                  InputProps={{
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <SearchIcon />
+                      </InputAdornment>
+                    ),
+                  }}
+                  sx={{ minWidth: '250px' }}
+                />
+                <Tooltip title="Highlight connected issues">
+                  <Button 
+                    variant="outlined" 
+                    size="small" 
+                    onClick={performAdvancedSearch}
+                    disabled={!searchTerm}
+                    color={advancedSearchActive ? 'secondary' : 'primary'}
+                  >
+                    Highlight Path
+                  </Button>
+                </Tooltip>
+                {advancedSearchActive && (
+                  <Chip 
+                    label={`${highlightedNodes.size} issues highlighted`} 
+                    color="secondary" 
+                    size="small" 
+                    onDelete={() => {
+                      setAdvancedSearchActive(false);
+                      setHighlightedNodes(new Set());
+                      setFilteredNodes(nodes);
+                    }}
+                  />
+                )}
+              </Box>
+              
+              {/* Filters */}
+              <Box sx={{ display: 'flex', gap: 1 }}>
+                <Tooltip title="Central Issue">
+                  <Chip
+                    label="Central"
+                    color={selectedNodeTypes.includes('central') ? 'primary' : 'default'}
+                    onClick={() => handleNodeTypeFilterChange('central')}
+                    sx={{ cursor: 'pointer' }}
+                  />
+                </Tooltip>
+                <Tooltip title="Parent Issues">
+                  <Chip
+                    icon={<AccountTreeIcon />}
+                    label={`Parents (${issueStats.parents || 0})`}
+                    color={selectedNodeTypes.includes('parent') ? 'primary' : 'default'}
+                    onClick={() => handleNodeTypeFilterChange('parent')}
+                    sx={{ cursor: 'pointer' }}
+                  />
+                </Tooltip>
+                <Tooltip title="Requirements">
+                  <Chip
+                    icon={<AssignmentIcon />}
+                    label={`Requirements (${issueStats.requirements})`}
+                    color={selectedNodeTypes.includes('requirement') ? 'primary' : 'default'}
+                    onClick={() => handleNodeTypeFilterChange('requirement')}
+                    sx={{ cursor: 'pointer' }}
+                  />
+                </Tooltip>
+                <Tooltip title="Tests">
+                  <Chip
+                    icon={<CheckCircleOutlineIcon />}
+                    label={`Tests (${issueStats.tests})`}
+                    color={selectedNodeTypes.includes('test') ? 'primary' : 'default'}
+                    onClick={() => handleNodeTypeFilterChange('test')}
+                    sx={{ cursor: 'pointer' }}
+                  />
+                </Tooltip>
+                <Tooltip title="Defects">
+                  <Chip
+                    icon={<BugReportIcon />}
+                    label={`Defects (${issueStats.defects})`}
+                    color={selectedNodeTypes.includes('defect') ? 'primary' : 'default'}
+                    onClick={() => handleNodeTypeFilterChange('defect')}
+                    sx={{ cursor: 'pointer' }}
+                  />
+                </Tooltip>
+                <Tooltip title="Other Issues">
+                  <Chip
+                    label={`Other (${issueStats.other})`}
+                    color={selectedNodeTypes.includes('related') ? 'primary' : 'default'}
+                    onClick={() => handleNodeTypeFilterChange('related')}
+                    sx={{ cursor: 'pointer' }}
+                  />
+                </Tooltip>
+              </Box>
+              
+              {/* Layout Direction */}
+              <Box>
+                <Tooltip title="Vertical Layout">
+                  <IconButton 
+                    color={layoutDirection === 'TB' ? 'primary' : 'default'} 
+                    onClick={() => changeLayoutDirection('TB')}
+                  >
+                    <TextRotateVerticalIcon />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Horizontal Layout">
+                  <IconButton 
+                    color={layoutDirection === 'LR' ? 'primary' : 'default'} 
+                    onClick={() => changeLayoutDirection('LR')}
+                  >
+                    <TextRotationNoneIcon />
+                  </IconButton>
+                </Tooltip>
+              </Box>
+
+              {/* Export Options */}
+              <Box sx={{ marginLeft: 'auto' }}>
+                <Tooltip title="Export as PNG">
+                  <IconButton onClick={() => exportImage('png')}>
+                    <ImageIcon />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Export as JPEG">
+                  <IconButton onClick={() => exportImage('jpeg')}>
+                    <SaveAltIcon />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Export as PDF">
+                  <IconButton onClick={() => exportImage('pdf')}>
+                    <PictureAsPdfIcon />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Export data as CSV">
+                  <IconButton onClick={exportCSV}>
+                    <FileDownloadIcon />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Export as CSV">
+                  <IconButton onClick={exportCSV}>
+                    <FileDownloadIcon />
+                  </IconButton>
+                </Tooltip>
+              </Box>
             </Box>
             
-            {/* Node Details Sidebar */}
-            {selectedNode && (
-              <Paper 
-                elevation={2} 
-                sx={{ 
-                  width: 350, 
-                  borderLeft: '1px solid #e0e0e0',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  overflowY: 'auto'
-                }}
-              >
-                <Box sx={{ 
-                  p: 2, 
-                  backgroundColor: '#f5f5f5', 
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center'
-                }}>
-                  <Typography variant="h6">Issue Details</Typography>
-                  <IconButton size="small" onClick={clearSelectedNode}>
-                    <RestartAltIcon fontSize="small" />
-                  </IconButton>
-                </Box>
+            <Divider />
+            
+            {/* The Flow Chart */}
+            <Box ref={flowRef} className="reactflow-wrapper" sx={{ flexGrow: 1, position: 'relative', display: 'flex' }}>
+              <Box sx={{ flexGrow: 1, position: 'relative' }}>
+                {/* Context Menu */}
+                <Menu
+                  keepMounted
+                  open={contextMenu !== null}
+                  onClose={handleContextMenuClose}
+                  anchorReference="anchorPosition"
+                  anchorPosition={
+                    contextMenu !== null
+                      ? { top: contextMenu.mouseY, left: contextMenu.mouseX }
+                      : undefined
+                  }
+                >
+                  <MenuItem onClick={handleCreateTestCase}>
+                    <ListItemIcon>
+                      <CreateIcon fontSize="small" />
+                    </ListItemIcon>
+                    <ListItemText>Generate Test Case</ListItemText>
+                  </MenuItem>
+                  <MenuItem onClick={handleShowTestStatus}>
+                    <ListItemIcon>
+                      <InfoIcon fontSize="small" />
+                    </ListItemIcon>
+                    <ListItemText>Show Test Status</ListItemText>
+                  </MenuItem>
+                </Menu>
                 
-                {/* Basic Issue Details Tabs */}
-                <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-                  <Tabs 
-                    value={detailsTabValue} 
-                    onChange={(e, newValue) => setDetailsTabValue(newValue)} 
-                    variant="scrollable"
-                    scrollButtons="auto"
-                  >
-                    <Tab label="Overview" />
-                    <Tab label="Description" />
-                    <Tab label="JSON" />
-                    {showCreateTestCase && <Tab label="Test Case" />}
-                  </Tabs>
-                </Box>
-                
-                {isLoadingDetails && (
-                  <LinearProgress color="primary" />
-                )}
-                
-                {/* Overview Tab */}
-                {detailsTabValue === 0 && (
-                  <Box sx={{ p: 2 }}>
-                    <Typography variant="subtitle1" fontWeight="bold" color="primary">
-                      {selectedNode.data.key}
-                    </Typography>
-                    <Typography variant="body1" gutterBottom>
-                      {selectedNode.data.summary}
-                    </Typography>
-                    
-                    <Box sx={{ mt: 2 }}>
-                      <Typography variant="subtitle2" color="text.secondary">
-                        Issue Type
-                      </Typography>
-                      <Typography variant="body2" gutterBottom>
-                        {selectedNode.data.issue_type}
-                      </Typography>
+                <ReactFlow
+                  nodes={displayedNodes}
+                  edges={displayedEdges}
+                  onNodesChange={onNodesChange}
+                  onEdgesChange={onEdgesChange}
+                  onNodeClick={onNodeClick}
+                  onNodeContextMenu={onNodeContextMenu}
+                  nodeTypes={nodeTypes}
+                  edgeTypes={edgeTypes}
+                  fitView
+                  nodesDraggable={true}
+                  nodesConnectable={false}
+                  onInit={setReactFlowInstance}
+                  attributionPosition="bottom-right"
+                  // Register drag event handlers
+                  onNodeDragStart={onNodeDragStart}
+                  onNodeDrag={onNodeDrag}
+                  onNodeDragStop={onNodeDragStop}
+                >
+                  <Background />
+                  <Controls />
+                  <MiniMap />
+                  
+                  {/* Floating Controls Panel */}
+                  <Panel position="top-right">
+                    <Paper elevation={3} sx={{ p: 1, borderRadius: 2 }}>
+                      <Stack direction="row" spacing={1}>
+                        <Tooltip title="Zoom In">
+                          <IconButton size="small" onClick={zoomIn}>
+                            <ZoomInIcon />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Zoom Out">
+                          <IconButton size="small" onClick={zoomOut}>
+                            <ZoomOutIcon />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Reset View">
+                          <IconButton size="small" onClick={resetView}>
+                            <RestartAltIcon />
+                          </IconButton>
+                        </Tooltip>
+                      </Stack>
+                    </Paper>
+                  </Panel>
+
+                  {/* Legend Panel */}
+                  <Panel position="bottom-right" className="legend-panel">
+                    <Paper elevation={3} sx={{ p: 2, borderRadius: 2, maxWidth: 250 }}>
+                      <Typography variant="subtitle2" gutterBottom>Legend</Typography>
+                      <Divider sx={{ mb: 1 }} />
                       
-                      <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
-                        Status
-                      </Typography>
-                      <Typography variant="body2" gutterBottom>
-                        {selectedNode.data.status}
-                      </Typography>
+                      <Typography variant="body2" sx={{ fontWeight: 'bold', mt: 1 }}>Node Types:</Typography>
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mt: 0.5 }}>
+                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                          <Box sx={{ width: 16, height: 16, backgroundColor: '#ff9800', borderRadius: 1 }} />
+                          <Typography variant="body2">Central Issue</Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                          <Box sx={{ width: 16, height: 16, backgroundColor: '#9c27b0', borderRadius: 1 }} />
+                          <Typography variant="body2">Parent Issue</Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                          <Box sx={{ width: 16, height: 16, backgroundColor: '#4dabf5', borderRadius: 1 }} />
+                          <Typography variant="body2">Requirement</Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                          <Box sx={{ width: 16, height: 16, backgroundColor: '#66bb6a', borderRadius: 1 }} />
+                          <Typography variant="body2">Test</Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                          <Box sx={{ width: 16, height: 16, backgroundColor: '#f44336', borderRadius: 1 }} />
+                          <Typography variant="body2">Defect</Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                          <Box sx={{ width: 16, height: 16, backgroundColor: '#9e9e9e', borderRadius: 1 }} />
+                          <Typography variant="body2">Other</Typography>
+                        </Box>
+                      </Box>
                       
-                      {selectedNode.data.priority && (
-                        <>
-                          <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
-                            Priority
-                          </Typography>
-                          <Typography variant="body2" gutterBottom>
-                            {selectedNode.data.priority}
-                          </Typography>
-                        </>
-                      )}
-                      
-                      {issueDetails && (
-                        <>
-                          <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
-                            Assignee
-                          </Typography>
-                          <Typography variant="body2" gutterBottom>
-                            {issueDetails.assignee || "Unassigned"}
-                          </Typography>
-                          
-                          <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
-                            Reporter
-                          </Typography>
-                          <Typography variant="body2" gutterBottom>
-                            {issueDetails.reporter || "Unknown"}
-                          </Typography>
-                          
-                          <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
-                            Created
-                          </Typography>
-                          <Typography variant="body2" gutterBottom>
-                            {new Date(issueDetails.created).toLocaleDateString()}
-                          </Typography>
-                        </>
-                      )}
+                      <Typography variant="body2" sx={{ fontWeight: 'bold', mt: 1 }}>Edge Types:</Typography>
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mt: 0.5 }}>
+                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                          <Box sx={{ width: 20, height: 2, backgroundColor: '#f44336' }} />
+                          <Typography variant="body2">Blocks/Depends</Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                          <Box sx={{ width: 20, height: 2, backgroundColor: '#66bb6a' }} />
+                          <Typography variant="body2">Tests/Verifies</Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                          <Box sx={{ width: 20, height: 2, backgroundColor: '#4dabf5' }} />
+                          <Typography variant="body2">Implements/Requires</Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                          <Box sx={{ width: 20, height: 2, backgroundColor: '#555' }} />
+                          <Typography variant="body2">Other Relationship</Typography>
+                        </Box>
+                      </Box>
+                    </Paper>
+                  </Panel>
+                </ReactFlow>
+              </Box>
+              
+              {/* Node Details Sidebar */}
+              {selectedNode && (
+                <Paper 
+                  elevation={2} 
+                  sx={{ 
+                    width: 350, 
+                    borderLeft: '1px solid #e0e0e0',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    overflowY: 'auto'
+                  }}
+                >
+                  <Box sx={{ 
+                    p: 2, 
+                    backgroundColor: '#f5f5f5', 
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center'
+                  }}>
+                    <Typography variant="h6">Issue Details</Typography>
+                    <IconButton size="small" onClick={clearSelectedNode}>
+                      <RestartAltIcon fontSize="small" />
+                    </IconButton>
+                  </Box>
+                  
+                  {/* Basic Issue Details Tabs */}
+                  <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+                    <Tabs 
+                      value={detailsTabValue} 
+                      onChange={(e, newValue) => setDetailsTabValue(newValue)} 
+                      variant="scrollable"
+                      scrollButtons="auto"
+                    >
+                      <Tab label="Overview" />
+                      <Tab label="Description" />
+                      <Tab label="JSON" />
+                      {showCreateTestCase && <Tab label="Test Case" />}
+                    </Tabs>
+                  </Box>
+                  
+                  {isLoadingDetails && (
+                    <LinearProgress color="primary" />
+                  )}
+                  
+                  {/* Overview Tab */}
+                  {detailsTabValue === 0 && (
+                    <Box sx={{ p: 2 }}>
+                      <Typography variant="subtitle1" fontWeight="bold" color="primary">
+                        {selectedNode.data.key}
+                      </Typography>
+                      <Typography variant="body1" gutterBottom>
+                        {selectedNode.data.summary}
+                      </Typography>
                       
                       <Box sx={{ mt: 2 }}>
                         <Typography variant="subtitle2" color="text.secondary">
-                          Connections
+                          Issue Type
                         </Typography>
-                        <Box sx={{ mt: 1 }}>
-                          {edges.filter(edge => edge.source === selectedNode.id || edge.target === selectedNode.id)
-                            .map((edge) => {
-                              const isSource = edge.source === selectedNode.id;
-                              const connectedNodeId = isSource ? edge.target : edge.source;
-                              const connectedNode = nodes.find(n => n.id === connectedNodeId);
-                              
-                              if (!connectedNode) return null;
-                              
-                              return (
-                                <Chip
-                                  key={edge.id}
-                                  size="small"
-                                  label={`${connectedNode.data.key} (${isSource ? 'Outgoing' : 'Incoming'})`}
-                                  sx={{ mb: 0.5, mr: 0.5 }}
-                                />
-                              );
-                            })
-                          }
+                        <Typography variant="body2" gutterBottom>
+                          {selectedNode.data.issue_type}
+                        </Typography>
+                        
+                        <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
+                          Status
+                        </Typography>
+                        <Typography variant="body2" gutterBottom>
+                          {selectedNode.data.status}
+                        </Typography>
+                        
+                        {selectedNode.data.priority && (
+                          <>
+                            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
+                              Priority
+                            </Typography>
+                            <Typography variant="body2" gutterBottom>
+                              {selectedNode.data.priority}
+                            </Typography>
+                          </>
+                        )}
+                        
+                        {issueDetails && (
+                          <>
+                            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
+                              Assignee
+                            </Typography>
+                            <Typography variant="body2" gutterBottom>
+                              {issueDetails.assignee || "Unassigned"}
+                            </Typography>
+                            
+                            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
+                              Reporter
+                            </Typography>
+                            <Typography variant="body2" gutterBottom>
+                              {issueDetails.reporter || "Unknown"}
+                            </Typography>
+                            
+                            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
+                              Created
+                            </Typography>
+                            <Typography variant="body2" gutterBottom>
+                              {new Date(issueDetails.created).toLocaleDateString()}
+                            </Typography>
+                          </>
+                        )}
+                        
+                        <Box sx={{ mt: 2 }}>
+                          <Typography variant="subtitle2" color="text.secondary">
+                            Connections
+                          </Typography>
+                          <Box sx={{ mt: 1 }}>
+                            {edges.filter(edge => edge.source === selectedNode.id || edge.target === selectedNode.id)
+                              .map((edge) => {
+                                const isSource = edge.source === selectedNode.id;
+                                const connectedNodeId = isSource ? edge.target : edge.source;
+                                const connectedNode = nodes.find(n => n.id === connectedNodeId);
+                                
+                                if (!connectedNode) return null;
+                                
+                                return (
+                                  <Chip
+                                    key={edge.id}
+                                    size="small"
+                                    label={`${connectedNode.data.key} (${isSource ? 'Outgoing' : 'Incoming'})`}
+                                    sx={{ mb: 0.5, mr: 0.5 }}
+                                  />
+                                );
+                              })
+                            }
+                          </Box>
                         </Box>
                       </Box>
                     </Box>
-                  </Box>
-                )}
-                
-                {/* Description Tab */}
-                {detailsTabValue === 1 && (
-                  <Box sx={{ p: 2 }}>
-                    <Typography variant="subtitle1" fontWeight="bold" color="primary" gutterBottom>
-                      {selectedNode.data.key} - Description
-                    </Typography>
-                    
-                    {issueDetails ? (
+                  )}
+                  
+                  {/* Description Tab */}
+                  {detailsTabValue === 1 && (
+                    <Box sx={{ p: 2 }}>
+                      <Typography variant="subtitle1" fontWeight="bold" color="primary" gutterBottom>
+                        {selectedNode.data.key} - Description
+                      </Typography>
+                      
+                      {issueDetails ? (
+                        <Box sx={{ 
+                          mt: 1, 
+                          p: 2, 
+                          maxHeight: '500px', 
+                          overflowY: 'auto',
+                          backgroundColor: '#f9f9f9',
+                          borderRadius: 1,
+                          whiteSpace: 'pre-wrap'
+                        }}>
+                          {/* Use our formatter to handle Atlassian Document Format if present */}
+                          {adfToText(issueDetails.description) || "No description available."}
+                        </Box>
+                      ) : (
+                        <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
+                          <CircularProgress size={30} />
+                        </Box>
+                      )}
+                      
+                      <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
+                        <Button 
+                          variant="outlined" 
+                          color="primary" 
+                          size="small"
+                          onClick={() => {
+                            if (issueDetails && issueDetails.description) {
+                              // Save JSON data to session storage for LLM processing
+                              const llmData = {
+                                issue: selectedNode.data.key,
+                                summary: selectedNode.data.summary,
+                                description: adfToText(issueDetails.description)
+                              };
+                              sessionStorage.setItem('jiraLLMData', JSON.stringify(llmData));
+                              alert('Issue description saved for LLM processing');
+                            }
+                          }}
+                        >
+                          Save Description for LLM
+                        </Button>
+                        
+                        <Button 
+                          variant="contained" 
+                          color="primary" 
+                          size="small"
+                          onClick={() => {
+                            const formatted = sessionStorage.getItem('jiraLLMFormatted');
+                            if (formatted) {
+                              navigator.clipboard.writeText(formatted);
+                              alert('Formatted JIRA data copied to clipboard for LLM input');
+                            }
+                          }}
+                        >
+                          Copy for LLM Input
+                        </Button>
+                      </Stack>
+                    </Box>
+                  )}
+                  
+                  {/* JSON Tab for LLM processing */}
+                  {detailsTabValue === 2 && (
+                    <Box sx={{ p: 2 }}>
+                      <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                        JSON Data for LLM Processing
+                      </Typography>
+                      
                       <Box sx={{ 
                         mt: 1, 
                         p: 2, 
                         maxHeight: '500px', 
                         overflowY: 'auto',
-                        backgroundColor: '#f9f9f9',
+                        backgroundColor: '#f5f5f5',
                         borderRadius: 1,
+                        fontFamily: 'monospace',
+                        fontSize: '12px',
                         whiteSpace: 'pre-wrap'
                       }}>
-                        {/* Use our formatter to handle Atlassian Document Format if present */}
-                        {adfToText(issueDetails.description) || "No description available."}
+                        {detailsJson || "Loading JSON data..."}
                       </Box>
-                    ) : (
-                      <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
-                        <CircularProgress size={30} />
-                      </Box>
-                    )}
-                    
-                    <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
-                      <Button 
-                        variant="outlined" 
-                        color="primary" 
-                        size="small"
-                        onClick={() => {
-                          if (issueDetails && issueDetails.description) {
-                            // Save JSON data to session storage for LLM processing
-                            const llmData = {
-                              issue: selectedNode.data.key,
-                              summary: selectedNode.data.summary,
-                              description: adfToText(issueDetails.description)
-                            };
-                            sessionStorage.setItem('jiraLLMData', JSON.stringify(llmData));
-                            alert('Issue description saved for LLM processing');
-                          }
-                        }}
-                      >
-                        Save Description for LLM
-                      </Button>
                       
-                      <Button 
-                        variant="contained" 
-                        color="primary" 
-                        size="small"
-                        onClick={() => {
-                          const formatted = sessionStorage.getItem('jiraLLMFormatted');
-                          if (formatted) {
-                            navigator.clipboard.writeText(formatted);
-                            alert('Formatted JIRA data copied to clipboard for LLM input');
-                          }
-                        }}
-                      >
-                        Copy for LLM Input
-                      </Button>
-                    </Stack>
-                  </Box>
-                )}
-                
-                {/* JSON Tab for LLM processing */}
-                {detailsTabValue === 2 && (
-                  <Box sx={{ p: 2 }}>
-                    <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                      JSON Data for LLM Processing
-                    </Typography>
-                    
-                    <Box sx={{ 
-                      mt: 1, 
-                      p: 2, 
-                      maxHeight: '500px', 
-                      overflowY: 'auto',
-                      backgroundColor: '#f5f5f5',
-                      borderRadius: 1,
-                      fontFamily: 'monospace',
-                      fontSize: '12px',
-                      whiteSpace: 'pre-wrap'
-                    }}>
-                      {detailsJson || "Loading JSON data..."}
+                      <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
+                        <Button
+                          variant="outlined"
+                          color="primary"
+                          size="small"
+                          onClick={() => {
+                            if (detailsJson) {
+                              sessionStorage.setItem('jiraDetailedJson', detailsJson);
+                              alert('JSON data saved for LLM processing');
+                            }
+                          }}
+                        >
+                          Save JSON to Session
+                        </Button>
+                        
+                        <Button
+                          variant="contained"
+                          color="primary"
+                          size="small"
+                          onClick={() => {
+                            if (detailsJson) {
+                              // Create downloadable JSON file
+                              const blob = new Blob([detailsJson], { type: 'application/json' });
+                              const url = URL.createObjectURL(blob);
+                              const link = document.createElement('a');
+                              link.href = url;
+                              link.download = `${selectedNode.data.key}_for_llm.json`;
+                              document.body.appendChild(link);
+                              link.click();
+                              document.body.removeChild(link);
+                              URL.revokeObjectURL(url);
+                            }
+                          }}
+                        >
+                          Download as JSON
+                        </Button>
+                      </Stack>
                     </Box>
-                    
-                    <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
-                      <Button
-                        variant="outlined"
-                        color="primary"
-                        size="small"
-                        onClick={() => {
-                          if (detailsJson) {
-                            sessionStorage.setItem('jiraDetailedJson', detailsJson);
-                            alert('JSON data saved for LLM processing');
-                          }
-                        }}
-                      >
-                        Save JSON to Session
-                      </Button>
+                  )}
+                  
+                  {/* Test Case Tab */}
+                  {showCreateTestCase && detailsTabValue === 3 && (
+                    <Box sx={{ p: 2 }}>
+                      <Typography variant="subtitle1" fontWeight="bold" color="primary" gutterBottom>
+                        Generated Test Case for {selectedNode.data.key}
+                      </Typography>
                       
-                      <Button
-                        variant="contained"
-                        color="primary"
-                        size="small"
-                        onClick={() => {
-                          if (detailsJson) {
-                            // Create downloadable JSON file
-                            const blob = new Blob([detailsJson], { type: 'application/json' });
-                            const url = URL.createObjectURL(blob);
-                            const link = document.createElement('a');
-                            link.href = url;
-                            link.download = `${selectedNode.data.key}_for_llm.json`;
-                            document.body.appendChild(link);
-                            link.click();
-                            document.body.removeChild(link);
-                            URL.revokeObjectURL(url);
-                          }
-                        }}
-                      >
-                        Download as JSON
-                      </Button>
-                    </Stack>
-                  </Box>
-                )}
-                
-                {/* Test Case Tab */}
-                {showCreateTestCase && detailsTabValue === 3 && (
-                  <Box sx={{ p: 2 }}>
-                    <Typography variant="subtitle1" fontWeight="bold" color="primary" gutterBottom>
-                      Generated Test Case for {selectedNode.data.key}
-                    </Typography>
-                    
-                    {isGeneratingTestCase ? (
-                      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', p: 4 }}>
-                        <CircularProgress size={40} />
-                        <Typography variant="body1" sx={{ mt: 2 }}>
-                          Generating test case using AI...
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
-                          This may take a few moments
-                        </Typography>
-                      </Box>
-                    ) : generatedTestCase ? (
-                      <Box>
-                        <Box sx={{ 
-                          p: 2, 
-                          mb: 3, 
-                          border: '1px solid #e0e0e0', 
-                          borderRadius: 1,
-                          backgroundColor: '#f9f9f9'
-                        }}>
-                          <Typography variant="subtitle2" color="text.secondary">
-                            Test Summary
+                      {isGeneratingTestCase ? (
+                        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', p: 4 }}>
+                          <CircularProgress size={40} />
+                          <Typography variant="body1" sx={{ mt: 2 }}>
+                            Generating test case using AI...
                           </Typography>
-                          <Typography variant="body1" gutterBottom>
-                            {generatedTestCase.summary}
+                          <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
+                            This may take a few moments
                           </Typography>
-                          
-                          <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 2 }}>
-                            Description
-                          </Typography>
-                          <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                            {generatedTestCase.description}
-                          </Typography>
-                          
-                          <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 2 }}>
-                            Precondition
-                          </Typography>
-                          <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                            {generatedTestCase.precondition}
-                          </Typography>
-                          
-                          <Grid container spacing={2} sx={{ mt: 1 }}>
-                            <Grid item xs={6}>
-                              <Typography variant="subtitle2" color="text.secondary">
-                                Test Type
-                              </Typography>
-                              <Typography variant="body2">
-                                {generatedTestCase.type}
-                              </Typography>
-                            </Grid>
-                            <Grid item xs={6}>
-                              <Typography variant="subtitle2" color="text.secondary">
-                                Priority
-                              </Typography>
-                              <Typography variant="body2">
-                                {generatedTestCase.priority}
-                              </Typography>
-                            </Grid>
-                          </Grid>
                         </Box>
-                        
-                        <Typography variant="subtitle1" gutterBottom>
-                          Test Steps
-                        </Typography>
-                        
-                        {generatedTestCase.steps.map((step, index) => (
-                          <Box 
-                            key={index}
-                            sx={{ 
-                              p: 2, 
-                              mb: 2, 
-                              border: '1px solid #e0e0e0', 
-                              borderRadius: 1
-                            }}
-                          >
-                            <Typography variant="subtitle2" gutterBottom>
-                              Step {index + 1}
-                            </Typography>
-                            
-                            <Box sx={{ ml: 2 }}>
-                              <Typography variant="body2" color="text.secondary">
-                                Action
-                              </Typography>
-                              <Typography variant="body2" gutterBottom>
-                                {step.step}
-                              </Typography>
-                              
-                              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                                Expected Result
-                              </Typography>
-                              <Typography variant="body2" gutterBottom>
-                                {step.expected}
-                              </Typography>
-                              
-                              {step.data && (
-                                <>
-                                  <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                                    Test Data
-                                  </Typography>
-                                  <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-                                    {step.data}
-                                  </Typography>
-                                </>
-                              )}
+                      ) : generatedTestCase ? (
+                        <Box>
+                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                            <Typography variant="h6">Test Case for {selectedNode?.data?.key}</Typography>
+                            <Box>
+                              <Stack direction="row" spacing={1}>
+                                <Button 
+                                  variant="outlined" 
+                                  startIcon={<FileCopyIcon />}
+                                  size="small"
+                                  onClick={() => {
+                                    // Create formatted text for clipboard
+                                    const testCaseText = `Summary: ${generatedTestCase.summary}\n\n` +
+                                      `Description: ${generatedTestCase.description}\n\n` +
+                                      `Precondition: ${generatedTestCase.precondition}\n\n` +
+                                      `Type: ${generatedTestCase.type}\n` +
+                                      `Priority: ${generatedTestCase.priority}\n\n` +
+                                      `Steps:\n` +
+                                      generatedTestCase.steps.map((step, i) => 
+                                        `${i+1}. ${step.step}\n   Expected: ${step.expected}` +
+                                        (step.data ? `\n   Data: ${step.data}` : '')
+                                      ).join('\n\n');
+                                  
+                                    navigator.clipboard.writeText(testCaseText);
+                                    alert("Test case copied to clipboard!");
+                                  }}
+                                >
+                                  Copy to Clipboard
+                                </Button>
+                                <Button 
+                                  variant="contained" 
+                                  color="primary"
+                                  startIcon={<SaveAltIcon />}
+                                  size="small"
+                                  onClick={() => {
+                                    downloadTestCaseAsCSV(generatedTestCase);
+                                  }}
+                                >
+                                  Download as CSV
+                                </Button>
+                              </Stack>
                             </Box>
                           </Box>
-                        ))}
-                        
-                        <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
+                          
+                          <Box sx={{ 
+                            p: 2, 
+                            mb: 3, 
+                            border: '1px solid #e0e0e0', 
+                            borderRadius: 1,
+                            backgroundColor: '#f9f9f9'
+                          }}>
+                            <Typography variant="subtitle2" color="text.secondary">
+                              Test Summary
+                            </Typography>
+                            <Typography variant="body1" gutterBottom>
+                              {generatedTestCase.summary}
+                            </Typography>
+                            
+                            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 2 }}>
+                              Description
+                            </Typography>
+                            <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                              {generatedTestCase.description}
+                            </Typography>
+                            
+                            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 2 }}>
+                              Precondition
+                            </Typography>
+                            <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                              {generatedTestCase.precondition}
+                            </Typography>
+                            
+                            <Grid container spacing={2} sx={{ mt: 1 }}>
+                              <Grid item xs={6}>
+                                <Typography variant="subtitle2" color="text.secondary">
+                                  Test Type
+                                </Typography>
+                                <Typography variant="body2">
+                                  {generatedTestCase.type}
+                                </Typography>
+                              </Grid>
+                              <Grid item xs={6}>
+                                <Typography variant="subtitle2" color="text.secondary">
+                                  Priority
+                                </Typography>
+                                <Typography variant="body2">
+                                  {generatedTestCase.priority}
+                                </Typography>
+                              </Grid>
+                            </Grid>
+                          </Box>
+                          
+                          <Typography variant="subtitle1" gutterBottom>
+                            Test Steps
+                          </Typography>
+                          
+                          {generatedTestCase.steps.map((step, index) => (
+                            <Box 
+                              key={index}
+                              sx={{ 
+                                p: 2, 
+                                mb: 2, 
+                                border: '1px solid #e0e0e0', 
+                                borderRadius: 1
+                              }}
+                            >
+                              <Typography variant="subtitle2" gutterBottom>
+                                Step {index + 1}
+                              </Typography>
+                              
+                              <Box sx={{ ml: 2 }}>
+                                <Typography variant="body2" color="text.secondary">
+                                  Action
+                                </Typography>
+                                <Typography variant="body2" gutterBottom>
+                                  {step.step}
+                                </Typography>
+                                
+                                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                  Expected Result
+                                </Typography>
+                                <Typography variant="body2" gutterBottom>
+                                  {step.expected}
+                                </Typography>
+                                
+                                {step.data && (
+                                  <>
+                                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                      Test Data
+                                    </Typography>
+                                    <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                                      {step.data}
+                                    </Typography>
+                                  </>
+                                )}
+                              </Box>
+                            </Box>
+                          ))}
+                          
+                          <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
+                            <Button 
+                              variant="contained" 
+                              color="primary"
+                              onClick={() => {
+                                // Here you would implement saving the test case to xray/jira
+                                alert('Test case would be saved to Xray/JIRA');
+                              }}
+                            >
+                              Save to Xray
+                            </Button>
+                            <Button 
+                              variant="outlined" 
+                              color="primary"
+                              onClick={() => {
+                                setShowCreateTestCase(false);
+                                setGeneratedTestCase(null);
+                                setDetailsTabValue(0); // Switch back to overview tab
+                              }}
+                            >
+                              Discard
+                            </Button>
+                          </Stack>
+                        </Box>
+                      ) : (
+                        <Box sx={{ textAlign: 'center', p: 4 }}>
+                          <Typography variant="body1">
+                            No test case generated yet.
+                          </Typography>
                           <Button 
                             variant="contained" 
                             color="primary"
-                            onClick={() => {
-                              // Here you would implement saving the test case to Xray/JIRA
-                              alert('Test case would be saved to Xray/JIRA');
-                            }}
+                            sx={{ mt: 2 }}
+                            onClick={handleCreateTestCase}
                           >
-                            Save to Xray
+                            Generate Test Case
                           </Button>
-                          <Button 
-                            variant="outlined" 
-                            color="primary"
-                            onClick={() => {
-                              setShowCreateTestCase(false);
-                              setGeneratedTestCase(null);
-                              setDetailsTabValue(0); // Switch back to overview tab
-                            }}
-                          >
-                            Discard
-                          </Button>
-                        </Stack>
-                      </Box>
-                    ) : (
-                      <Box sx={{ textAlign: 'center', p: 4 }}>
-                        <Typography variant="body1">
-                          No test case generated yet.
-                        </Typography>
-                        <Button 
-                          variant="contained" 
-                          color="primary"
-                          sx={{ mt: 2 }}
-                          onClick={handleCreateTestCase}
-                        >
-                          Generate Test Case
-                        </Button>
-                      </Box>
-                    )}
-                  </Box>
-                )}
-              </Paper>
-            )}
-          </Box>
-        </TabPanel>
-        
-        {/* Analytics Tab */}
-        <TabPanel value={tabValue} index={1}>
-          <Box sx={{ p: 3 }}>
-            <Typography variant="h6" gutterBottom>
-              Issue Statistics
-            </Typography>
-            
-            <Grid container spacing={3}>
-              {/* Summary Card */}
-              <Grid item xs={12} md={4}>
-                <Card elevation={2}>
-                  <CardContent>
-                    <Typography variant="h6" gutterBottom>
-                      Summary
-                    </Typography>
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Typography variant="body1">Total Issues:</Typography>
-                        <Typography variant="body1" fontWeight="bold">{originalStats.total}</Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Typography variant="body1">Parents:</Typography>
-                        <Typography variant="body1" color="secondary">{originalStats.parents || 0}</Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Typography variant="body1">Requirements:</Typography>
-                        <Typography variant="body1" color="primary">{originalStats.requirements}</Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Typography variant="body1">Tests:</Typography>
-                        <Typography variant="body1" color="success.main">{originalStats.tests}</Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Typography variant="body1">Defects:</Typography>
-                        <Typography variant="body1" color="error.main">{originalStats.defects}</Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                        <Typography variant="body1">Other Issues:</Typography>
-                        <Typography variant="body1" color="text.secondary">{originalStats.other}</Typography>
-                      </Box>
+                        </Box>
+                      )}
                     </Box>
-                  </CardContent>
-                </Card>
-              </Grid>
+                  )}
+                </Paper>
+              )}
+            </Box>
+          </TabPanel>
+          
+          {/* Analytics Tab */}
+          <TabPanel value={tabValue} index={1}>
+            <Box sx={{ p: 3 }}>
+              <Typography variant="h6" gutterBottom>
+                Issue Statistics
+              </Typography>
               
-              {/* Pie Chart */}
-              <Grid item xs={12} md={4}>
-                <Card elevation={2} sx={{ height: '100%' }}>
-                  <CardContent>
-                    <Typography variant="h6" gutterBottom align="center">
-                      Issue Distribution
-                    </Typography>
-                    <Box sx={{ height: 250, display: 'flex', justifyContent: 'center' }}>
-                      <Pie data={pieChartData} options={{ maintainAspectRatio: false }} />
-                    </Box>
-                  </CardContent>
-                </Card>
+              <Grid container spacing={3}>
+                {/* Summary Card */}
+                <Grid item xs={12} md={4}>
+                  <Card elevation={2}>
+                    <CardContent>
+                      <Typography variant="h6" gutterBottom>
+                        Summary
+                      </Typography>
+                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <Typography variant="body1">Total Issues:</Typography>
+                          <Typography variant="body1" fontWeight="bold">{originalStats.total}</Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <Typography variant="body1">Parents:</Typography>
+                          <Typography variant="body1" color="secondary">{originalStats.parents || 0}</Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <Typography variant="body1">Requirements:</Typography>
+                          <Typography variant="body1" color="primary">{originalStats.requirements}</Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <Typography variant="body1">Tests:</Typography>
+                          <Typography variant="body1" color="success.main">{originalStats.tests}</Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <Typography variant="body1">Defects:</Typography>
+                          <Typography variant="body1" color="error.main">{originalStats.defects}</Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <Typography variant="body1">Other Issues:</Typography>
+                          <Typography variant="body1" color="text.secondary">{originalStats.other}</Typography>
+                        </Box>
+                      </Box>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                
+                {/* Pie Chart */}
+                <Grid item xs={12} md={4}>
+                  <Card elevation={2} sx={{ height: '100%' }}>
+                    <CardContent>
+                      <Typography variant="h6" gutterBottom align="center">
+                        Issue Distribution
+                      </Typography>
+                      <Box sx={{ height: 250, display: 'flex', justifyContent: 'center' }}>
+                        <Pie data={pieChartData} options={{ maintainAspectRatio: false }} />
+                      </Box>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                
+                {/* Bar Chart */}
+                <Grid item xs={12} md={4}>
+                  <Card elevation={2} sx={{ height: '100%' }}>
+                    <CardContent>
+                      <Typography variant="h6" gutterBottom align="center">
+                        Issue Counts
+                      </Typography>
+                      <Box sx={{ height: 250 }}>
+                        <Bar data={barChartData} options={barChartOptions} />
+                      </Box>
+                    </CardContent>
+                  </Card>
+                </Grid>
+                
+                {/* Coverage Metrics */}
+                <Grid item xs={12}>
+                  <Card elevation={2}>
+                    <CardContent>
+                      <Typography variant="h6" gutterBottom>
+                        Coverage Metrics
+                      </Typography>
+                      <Grid container spacing={2}>
+                        <Grid item xs={12} sm={6} md={3}>
+                          <Card variant="outlined">
+                            <CardContent>
+                              <Typography variant="subtitle2" color="text.secondary">Test Coverage Ratio</Typography>
+                              <Typography variant="h5">
+                                {originalStats.requirements ? 
+                                  `${((originalStats.tests / originalStats.requirements) * 100).toFixed(1)}%` : 
+                                  'N/A'
+                                }
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                Tests per Requirement
+                              </Typography>
+                            </CardContent>
+                          </Card>
+                        </Grid>
+                        <Grid item xs={12} sm={6} md={3}>
+                          <Card variant="outlined">
+                            <CardContent>
+                              <Typography variant="subtitle2" color="text.secondary">Defect Rate</Typography>
+                              <Typography variant="h5">
+                                {originalStats.tests ? 
+                                  `${((originalStats.defects / originalStats.tests) * 100).toFixed(1)}%` : 
+                                  'N/A'
+                                }
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                Defects per Test
+                              </Typography>
+                            </CardContent>
+                          </Card>
+                        </Grid>
+                        <Grid item xs={12} sm={6} md={3}>
+                          <Card variant="outlined">
+                            <CardContent>
+                              <Typography variant="subtitle2" color="text.secondary">Total Relationships</Typography>
+                              <Typography variant="h5">
+                                {edges.length}
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                Connections between issues
+                              </Typography>
+                            </CardContent>
+                          </Card>
+                        </Grid>
+                        <Grid item xs={12} sm={6} md={3}>
+                          <Card variant="outlined">
+                            <CardContent>
+                              <Typography variant="subtitle2" color="text.secondary">Average Connections</Typography>
+                              <Typography variant="h5">
+                                {originalStats.total ? 
+                                  (edges.length / originalStats.total).toFixed(1) : 
+                                  '0'
+                                }
+                              </Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                Per issue
+                              </Typography>
+                            </CardContent>
+                          </Card>
+                        </Grid>
+                      </Grid>
+                    </CardContent>
+                  </Card>
+                </Grid>
               </Grid>
-              
-              {/* Bar Chart */}
-              <Grid item xs={12} md={4}>
-                <Card elevation={2} sx={{ height: '100%' }}>
-                  <CardContent>
-                    <Typography variant="h6" gutterBottom align="center">
-                      Issue Counts
-                    </Typography>
-                    <Box sx={{ height: 250 }}>
-                      <Bar data={barChartData} options={barChartOptions} />
-                    </Box>
-                  </CardContent>
-                </Card>
-              </Grid>
-              
-              {/* Coverage Metrics */}
-              <Grid item xs={12}>
-                <Card elevation={2}>
-                  <CardContent>
-                    <Typography variant="h6" gutterBottom>
-                      Coverage Metrics
-                    </Typography>
-                    <Grid container spacing={2}>
-                      <Grid item xs={12} sm={6} md={3}>
-                        <Card variant="outlined">
-                          <CardContent>
-                            <Typography variant="subtitle2" color="text.secondary">Test Coverage Ratio</Typography>
-                            <Typography variant="h5">
-                              {originalStats.requirements ? 
-                                `${((originalStats.tests / originalStats.requirements) * 100).toFixed(1)}%` : 
-                                'N/A'
-                              }
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              Tests per Requirement
-                            </Typography>
-                          </CardContent>
-                        </Card>
-                      </Grid>
-                      <Grid item xs={12} sm={6} md={3}>
-                        <Card variant="outlined">
-                          <CardContent>
-                            <Typography variant="subtitle2" color="text.secondary">Defect Rate</Typography>
-                            <Typography variant="h5">
-                              {originalStats.tests ? 
-                                `${((originalStats.defects / originalStats.tests) * 100).toFixed(1)}%` : 
-                                'N/A'
-                              }
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              Defects per Test
-                            </Typography>
-                          </CardContent>
-                        </Card>
-                      </Grid>
-                      <Grid item xs={12} sm={6} md={3}>
-                        <Card variant="outlined">
-                          <CardContent>
-                            <Typography variant="subtitle2" color="text.secondary">Total Relationships</Typography>
-                            <Typography variant="h5">
-                              {edges.length}
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              Connections between issues
-                            </Typography>
-                          </CardContent>
-                        </Card>
-                      </Grid>
-                      <Grid item xs={12} sm={6} md={3}>
-                        <Card variant="outlined">
-                          <CardContent>
-                            <Typography variant="subtitle2" color="text.secondary">Average Connections</Typography>
-                            <Typography variant="h5">
-                              {originalStats.total ? 
-                                (edges.length / originalStats.total).toFixed(1) : 
-                                '0'
-                              }
-                            </Typography>
-                            <Typography variant="body2" color="text.secondary">
-                              Per issue
-                            </Typography>
-                          </CardContent>
-                        </Card>
-                      </Grid>
-                    </Grid>
-                  </CardContent>
-                </Card>
-              </Grid>
-            </Grid>
-          </Box>
-        </TabPanel>
-      </Paper>
+            </Box>
+          </TabPanel>
+        </Paper>
+      )}
 
-      {/* Context Menu */}
-      <Menu
-        open={contextMenu !== null}
-        onClose={handleContextMenuClose}
-        anchorReference="anchorPosition"
-        anchorPosition={
-          contextMenu !== null
-            ? { top: contextMenu.mouseY, left: contextMenu.mouseX }
-            : undefined
-        }
-      >
-        <MenuItem onClick={handleCreateTestCase}>
-          <ListItemIcon>
-            <CreateIcon fontSize="small" />
-          </ListItemIcon>
-          <ListItemText>Create Test Case in XRay Format</ListItemText>
-        </MenuItem>
-        <MenuItem onClick={handleShowTestStatus}>
-          <ListItemIcon>
-            <InfoIcon fontSize="small" />
-          </ListItemIcon>
-          <ListItemText>Show Test Case Status</ListItemText>
-        </MenuItem>
-      </Menu>
-      
       {/* Test Case Status Modal */}
-      <TestCaseStatusModal
-        open={showTestCaseStatus}
-        onClose={() => setShowTestCaseStatus(false)}
-        issueData={contextMenuNode?.data}
+      {showTestCaseStatus && selectedNode && (
+        <TestCaseStatusModal
+          open={showTestCaseStatus}
+          onClose={() => setShowTestCaseStatus(false)}
+          issueKey={selectedNode.data.key}
+        />
+      )}
+      
+      {/* Test Case Generation Modal */}
+      <TestCaseGenerationModal
+        open={showGenerationModal}
+        onClose={() => setShowGenerationModal(false)}
+        isGenerating={isGeneratingTestCase}
+        error={testCaseGenerationError}
       />
     </Container>
   );

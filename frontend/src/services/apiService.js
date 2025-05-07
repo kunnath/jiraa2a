@@ -83,7 +83,7 @@ export const apiService = {
         hasBaseUrl: !!credentials?.base_url,
         hasCentralId: !!credentials?.central_jira_id
       });
-      throw new Error('Missing required credentials for visualization');
+      throw new Error('Missing required credentials or Central JIRA ID for visualization');
     }
     
     try {
@@ -148,10 +148,20 @@ export const apiService = {
       }
       
       console.log('Issue details received');
-      return response.data;
+      // Return data in a consistent format with success flag
+      return {
+        success: true,
+        data: response.data
+      };
     } catch (error) {
       console.error('Failed to fetch issue details:', error);
-      throw error;
+      
+      // Return structured error response instead of throwing
+      return {
+        success: false,
+        error: error.message || 'Failed to fetch issue details',
+        data: null
+      };
     }
   },
 };

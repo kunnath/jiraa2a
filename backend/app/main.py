@@ -523,12 +523,20 @@ async def get_issue_details(request: IssueDetailsRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing JIRA data: {str(e)}")
 
+class StructuredData(BaseModel):
+    acceptance_criteria: Optional[str] = None
+    requirements: Optional[str] = None
+    steps_to_reproduce: Optional[str] = None
+    expected_behavior: Optional[str] = None
+    actual_behavior: Optional[str] = None
+
 class IssueForTestCase(BaseModel):
     key: str
     summary: str
     issue_type: str
     status: str
     description: str
+    structured_data: Optional[StructuredData] = None
 
 class TestCaseRequest(BaseModel):
     issueData: IssueForTestCase
@@ -577,16 +585,42 @@ async def generate_test_case(request: TestCaseRequest):
         system_prompt = """You are an expert test case generator for XRay test management within JIRA.
         Given a JIRA issue (which could be a user story, bug, or requirement), generate a comprehensive test case in XRay format.
         
-        The test case should include:
-        1. A summary that clearly indicates what is being tested
-        2. A description explaining the test's purpose
-        3. Any preconditions that must be met before testing
-        4. Test type (e.g., Functional, Integration, Performance)
-        5. Priority (High, Medium, Low)
-        6. Clear, step-by-step test steps where each step has:
-           - An action to perform
-           - The expected result for that action
-           - Any test data needed (optional)
+        Follow these guidelines to create a high-quality test case:
+        
+        1. SUMMARY: Create a clear, concise summary that identifies:
+           - The specific functionality being tested
+           - The condition or scenario being validated
+           - Expected outcome if relevant
+           
+        2. DESCRIPTION: Write a detailed explanation that includes:
+           - The purpose of the test case
+           - The business context of why this test matters
+           - Any specific data conditions or environment requirements
+           
+        3. PRECONDITIONS: List all necessary conditions that must be met before testing:
+           - User roles/permissions required
+           - System state requirements
+           - Data that must exist
+           - Dependencies on other components
+           
+        4. TEST TYPE: Select the most appropriate type based on the issue:
+           - Functional: Tests specific functionality
+           - Integration: Tests interaction between components
+           - Performance: Tests system behavior under load
+           - Security: Tests protection against vulnerabilities
+           - Usability: Tests user experience aspects
+           
+        5. PRIORITY: Assign appropriate priority:
+           - High: Critical functionality, blocking issues, core features
+           - Medium: Important but not critical features
+           - Low: Edge cases, nice-to-have features
+           
+        6. TEST STEPS: Create detailed, realistic steps that:
+           - Are clearly numbered and sequential
+           - Include precise actions for the tester to follow
+           - Have specific, verifiable expected results
+           - Include relevant test data when needed
+           - Cover both happy path and error scenarios
         
         Format the response as a valid JSON object with the following structure:
         {
@@ -611,18 +645,67 @@ async def generate_test_case(request: TestCaseRequest):
         # Get issue data
         issue_data = request.issueData.dict()
         
-        # Create user prompt
-        user_prompt = f"""
-        Please generate a test case in XRay format for the following JIRA issue:
+        # Create user prompt with structured data if available
+        structured_data = issue_data.get('structured_data', {})
         
-        Issue Key: {issue_data['key']}
-        Summary: {issue_data['summary']}
-        Issue Type: {issue_data['issue_type']}
-        Status: {issue_data['status']}
-        Description: {issue_data['description']}
+        # Start with basic issue information
+        prompt_parts = [
+            f"Please generate a test case in XRay format for the following JIRA issue:",
+            f"",
+            f"Issue Key: {issue_data['key']}",
+            f"Summary: {issue_data['summary']}",
+            f"Issue Type: {issue_data['issue_type']}",
+            f"Status: {issue_data['status']}",
+        ]
         
-        Generate a comprehensive test case with at least 3-5 test steps.
-        """
+        # Add structured sections if available
+        if structured_data:
+            if structured_data.get('acceptance_criteria'):
+                prompt_parts.extend([
+                    f"",
+                    f"Acceptance Criteria:",
+                    f"{structured_data.get('acceptance_criteria')}"
+                ])
+            
+            if structured_data.get('requirements'):
+                prompt_parts.extend([
+                    f"",
+                    f"Requirements:",
+                    f"{structured_data.get('requirements')}"
+                ])
+            
+            if structured_data.get('steps_to_reproduce'):
+                prompt_parts.extend([
+                    f"",
+                    f"Steps to Reproduce:",
+                    f"{structured_data.get('steps_to_reproduce')}"
+                ])
+            
+            if structured_data.get('expected_behavior'):
+                prompt_parts.extend([
+                    f"",
+                    f"Expected Behavior:",
+                    f"{structured_data.get('expected_behavior')}"
+                ])
+            
+            if structured_data.get('actual_behavior'):
+                prompt_parts.extend([
+                    f"",
+                    f"Actual Behavior:",
+                    f"{structured_data.get('actual_behavior')}"
+                ])
+        
+        # Add the full description at the end
+        prompt_parts.extend([
+            f"",
+            f"Full Description:",
+            f"{issue_data['description']}",
+            f"",
+            f"Generate a comprehensive test case with at least 3-5 test steps."
+        ])
+        
+        # Join all parts to create the complete prompt
+        user_prompt = "\n".join(prompt_parts)
         
         # First attempt - try with deepseek-r1:8b model
         try:

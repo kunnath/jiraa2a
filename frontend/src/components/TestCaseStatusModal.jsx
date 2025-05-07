@@ -30,13 +30,13 @@ const statusColors = {
 /**
  * Modal for displaying test case status
  */
-const TestCaseStatusModal = ({ open, onClose, issueData }) => {
+const TestCaseStatusModal = ({ open, onClose, issueKey }) => {
   const [loading, setLoading] = useState(true);
   const [testCases, setTestCases] = useState([]);
   
   // Simulate loading test cases from API
   useEffect(() => {
-    if (open && issueData) {
+    if (open && issueKey) {
       // Reset state when modal opens
       setLoading(true);
       setTestCases([]);
@@ -49,7 +49,7 @@ const TestCaseStatusModal = ({ open, onClose, issueData }) => {
           { 
             id: 'TC-001', 
             key: `TEST-${Math.floor(Math.random() * 1000)}`,
-            summary: `Test case for ${issueData.key} - Login validation`, 
+            summary: `Test case for ${issueKey} - Login validation`, 
             status: 'Passed',
             lastRun: '2025-04-28',
             executionTime: '1m 24s'
@@ -57,7 +57,7 @@ const TestCaseStatusModal = ({ open, onClose, issueData }) => {
           { 
             id: 'TC-002', 
             key: `TEST-${Math.floor(Math.random() * 1000)}`,
-            summary: `Test case for ${issueData.key} - Form submission`, 
+            summary: `Test case for ${issueKey} - Form submission`, 
             status: 'Failed',
             lastRun: '2025-05-01',
             executionTime: '0m 47s',
@@ -66,7 +66,7 @@ const TestCaseStatusModal = ({ open, onClose, issueData }) => {
           { 
             id: 'TC-003', 
             key: `TEST-${Math.floor(Math.random() * 1000)}`,
-            summary: `Test case for ${issueData.key} - Error handling`, 
+            summary: `Test case for ${issueKey} - Error handling`, 
             status: 'Pending',
             lastRun: '-',
             executionTime: '-'
@@ -74,7 +74,7 @@ const TestCaseStatusModal = ({ open, onClose, issueData }) => {
           { 
             id: 'TC-004', 
             key: `TEST-${Math.floor(Math.random() * 1000)}`,
-            summary: `Test case for ${issueData.key} - API integration`, 
+            summary: `Test case for ${issueKey} - API integration`, 
             status: 'Draft',
             lastRun: '-',
             executionTime: '-'
@@ -87,7 +87,7 @@ const TestCaseStatusModal = ({ open, onClose, issueData }) => {
       
       return () => clearTimeout(timer);
     }
-  }, [open, issueData]);
+  }, [open, issueKey]);
   
   // Calculate test status statistics
   const stats = testCases.reduce((acc, test) => {
@@ -108,7 +108,7 @@ const TestCaseStatusModal = ({ open, onClose, issueData }) => {
       maxWidth="md"
       fullWidth
     >
-      <DialogTitle>Test Case Status for {issueData?.key}</DialogTitle>
+      <DialogTitle>Test Case Status for {issueKey}</DialogTitle>
       <DialogContent>
         {loading ? (
           <Box sx={{ display: 'flex', justifyContent: 'center', my: 4 }}>
@@ -117,7 +117,7 @@ const TestCaseStatusModal = ({ open, onClose, issueData }) => {
         ) : (
           <Box>
             <Typography variant="subtitle1" gutterBottom>
-              {issueData?.summary}
+              Test cases related to {issueKey}
             </Typography>
             
             {testCases.length > 0 ? (
