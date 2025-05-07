@@ -2,6 +2,8 @@
 
 A full-stack application that visualizes relationships between JIRA issues using Python (FastAPI) and React.
 
+![JIRA Relationship Visualizer Screenshot](toolshot.png)
+
 ## Features
 
 - Connect to JIRA using your credentials
@@ -17,8 +19,15 @@ A full-stack application that visualizes relationships between JIRA issues using
 - View full JIRA issue descriptions
 - Format JIRA data for LLM (Large Language Model) processing
 - Export issue data as JSON for advanced analysis
-- **NEW**: Generate test cases in XRay format using AI (Ollama LLM)
-- **NEW**: View test case status for issues
+
+### AI-Powered Features
+
+- **Generate test cases in XRay format** using AI (Ollama LLM with deepseek-r1:8b model)
+- **Copy generated test cases** directly to clipboard for use in JIRA/XRay
+- **Intelligent description parsing** that identifies acceptance criteria, requirements, and more
+- **Enhanced ADF to text conversion** with support for tables, code blocks, and formatting
+- **Structured data extraction** for more accurate test case generation
+- **View test case status** for issues with existing test cases
 
 ## Prerequisites
 
@@ -26,6 +35,27 @@ A full-stack application that visualizes relationships between JIRA issues using
 - Node.js 16+ with npm
 - JIRA account with API token
 - Docker and Docker Compose (for containerized deployment)
+
+### System Requirements
+
+For basic functionality:
+- 4GB RAM
+- 2 CPU cores
+- 1GB free disk space
+
+For optimal LLM performance (test case generation):
+- 8GB+ RAM recommended
+- 4 CPU cores recommended
+- 10GB+ free disk space for model storage
+
+### Performance Considerations
+
+When using the LLM features for test case generation:
+
+- The first run will download the deepseek-r1:8b model (~8GB)
+- Test case generation typically takes 5-15 seconds per request
+- Memory usage increases when actively using the LLM
+- For systems with limited resources, use the local Ollama approach
 
 ## Setup
 
@@ -153,19 +183,39 @@ For more information on using the JIRA data with LLMs, see [JIRA LLM Integration
 
 ### Using Test Case Generation with AI
 
-The application now supports generating test cases in XRay format using AI through the Ollama LLM service:
+The application now supports generating comprehensive test cases in XRay format using AI through the Ollama LLM service:
 
 1. **Right-click on any JIRA issue node** in the visualization graph
 2. Select **"Create Test Case in XRay Format"** from the context menu
 3. The system will use the Ollama LLM (deepseek-r1:8b model) to analyze your issue and generate a test case
 4. The generated test case will appear in a new tab next to the issue details
-5. You can review the generated test case and choose to save it or discard it
+5. Review the generated test case which includes:
+   - Test summary and description
+   - Preconditions
+   - Test type and priority
+   - Detailed test steps with expected results
+6. Use the **"Copy to Clipboard"** button to copy the test case for use in JIRA/XRay
+7. (Coming soon) Use the **"Save to XRay"** button to directly save the test case to your JIRA instance
+
+#### How It Works
+
+The test case generation process includes:
+
+1. **Intelligent parsing** of JIRA issue descriptions
+2. **Structured data extraction** that identifies:
+   - Acceptance criteria
+   - Requirements
+   - Steps to reproduce (for bug reports)
+   - Expected and actual behavior
+3. **Advanced prompt engineering** that guides the LLM to create thorough test cases
+4. **Enhanced ADF to text conversion** for better handling of rich JIRA content
 
 #### Requirements for Test Case Generation
 
 - Ollama service must be running (automatically managed in Docker setup)
 - The deepseek-r1:8b model should be available in Ollama
 - Issues should have good descriptions for better test case generation
+- For optimal results, include structured sections in your JIRA descriptions (e.g., "Acceptance Criteria:")
 
 #### Viewing Test Case Status
 
@@ -180,8 +230,12 @@ You can also view the status of test cases associated with an issue:
 The test case generation feature is part of our expanding AI capabilities:
 
 - **LLM-Ready Data Export**: Format and export JIRA data for use with external LLMs
-- **AI-Generated Test Cases**: Create comprehensive test cases with proper XRay structure
+- **AI-Generated Test Cases**: Create comprehensive test cases with proper XRay structure 
+- **Intelligent Structure Extraction**: Automatically identify key sections in JIRA descriptions
+- **Enhanced ADF Parsing**: Convert Atlassian Document Format to properly formatted text
+- **One-click Copy**: Copy generated test cases to clipboard for easy transfer to JIRA/XRay
 - **Test Coverage Analysis**: Analyze test coverage across your requirements
+- **Coming Soon**: Direct integration with XRay API for saving test cases
 
 ## Utility Scripts
 
@@ -189,23 +243,81 @@ The project includes several utility scripts to help with setup and troubleshoot
 
 ### Ollama Setup and Diagnostics
 
-- `start_with_local_ollama.sh`: Starts the application using your locally installed Ollama instead of a Docker container
-- `setup_ollama_model.sh`: Checks for Ollama installation, starts the Ollama service if needed, and downloads required models
-- `ollama_diagnostics.sh`: Performs diagnostics on your Ollama setup to troubleshoot issues
-- `check_docker_setup.sh`: Verifies that your Docker environment is properly configured for the application
+The application provides several utility scripts to help with setup and troubleshooting:
 
-### Usage
+#### Setup Scripts
 
-```bash
-# Start with local Ollama (recommended approach)
-./start_with_local_ollama.sh
+- `start_with_local_ollama.sh`: Starts the application using your locally installed Ollama
+  ```bash
+  # Start with local Ollama (recommended approach)
+  ./start_with_local_ollama.sh
+  ```
 
-# Run diagnostics if you're having issues with Ollama
-./ollama_diagnostics.sh
+- `setup_ollama_model.sh`: Checks for Ollama installation, starts the service, and downloads required models
+  ```bash
+  # Setup Ollama and download required models
+  ./setup_ollama_model.sh
+  ```
 
-# Check your Docker setup
-./check_docker_setup.sh
-```
+#### Diagnostic Tools
+
+- `ollama_diagnostics.sh`: Comprehensive diagnostics on your Ollama setup
+  ```bash
+  # Run diagnostics if you're having issues with Ollama
+  ./ollama_diagnostics.sh
+  ```
+  
+  This script checks:
+  - If Ollama is installed
+  - If the Ollama service is running
+  - If the required models are available
+  - System resources (memory, disk space) for running LLMs
+  - Network connectivity to the Ollama API
+
+- `check_docker_setup.sh`: Verifies your Docker environment configuration
+  ```bash
+  # Check your Docker setup
+  ./check_docker_setup.sh
+  ```
+
+### When to Use Local vs. Containerized Ollama
+
+- **Local Ollama** (Recommended): Better performance, less resource usage, persistent model storage
+- **Containerized Ollama**: Completely isolated environment, consistent setup across all systems
+
+The local Ollama approach is recommended for most users as it:
+1. Uses fewer system resources
+2. Provides better performance for test case generation
+3. Allows for model reuse across multiple projects
+4. Avoids downloading the model again for each container restart
+
+## Troubleshooting
+
+### Common Issues
+
+#### Test Case Generation Issues
+
+- **Issue**: Test case generation fails with "Failed to generate test case"  
+  **Solution**: Ensure the Ollama service is running and the deepseek-r1:8b model is available. Run `./ollama_diagnostics.sh` to check.
+
+- **Issue**: Generated test cases are too generic  
+  **Solution**: Improve your JIRA issue descriptions with detailed acceptance criteria and requirements sections.
+
+#### Connection Issues
+
+- **Issue**: Cannot connect to JIRA  
+  **Solution**: Verify your JIRA credentials and ensure your API token has appropriate permissions.
+
+- **Issue**: Docker container networking issues  
+  **Solution**: Run `./check_docker_setup.sh` to diagnose and fix common Docker network problems.
+
+### Getting Help
+
+If you encounter any issues not covered here, please:
+
+1. Check the [documentation](docs/)
+2. Run the appropriate diagnostic script (`ollama_diagnostics.sh` or `check_docker_setup.sh`)
+3. Open an issue on GitHub with details about the problem
 
 ## Security Note
 
@@ -214,4 +326,3 @@ This application stores JIRA credentials temporarily for the session. Your API t
 ## License
 
 MIT
-# jiraa2a
