@@ -961,9 +961,17 @@ const JiraVisualization = ({ data }) => {
 
   // Handle node click to show details
   const onNodeClick = useCallback((event, node) => {
+    // Reset test case state when selecting a new node
+    setGeneratedTestCase(null);
+    setShowCreateTestCase(false);
+    setTestCaseGenerationError(null);
+    
     setSelectedNode(node);
     // Fetch detailed information including description
     fetchIssueDetails(node);
+    
+    // Reset details tab to overview
+    setDetailsTabValue(0);
   }, [fetchIssueDetails]);
   
   // Handle node right-click for context menu
@@ -1842,8 +1850,16 @@ const JiraVisualization = ({ data }) => {
                   nodes={nodes} 
                   onSelect={(node) => {
                     console.log("JIRA ID clicked:", node.data.key);
+                    // Reset test case state when selecting a new JIRA ID
+                    setGeneratedTestCase(null);
+                    setShowCreateTestCase(false);
+                    setTestCaseGenerationError(null);
+                    
                     setSelectedNode(node);
                     fetchIssueDetails(node);
+                    
+                    // Reset details tab to overview
+                    setDetailsTabValue(0);
                     
                     // Fit view to highlight the selected node
                     if (reactFlowInstance) {
@@ -2995,10 +3011,10 @@ const JiraVisualization = ({ data }) => {
                           )}
                           
                           {/* Test Case Tab */}
-                          {showCreateTestCase && detailsTabValue === 3 && (
+                          {detailsTabValue === 3 && (
                             <Box sx={{ p: 2 }}>
                               <Typography variant="subtitle2" color="primary" sx={{ fontSize: '0.9rem' }} gutterBottom>
-                                Generated Test Case for {selectedNode.data.key}
+                                Test Case for {selectedNode.data.key}
                               </Typography>
                               
                               {isGeneratingTestCase ? (
@@ -3177,15 +3193,26 @@ const JiraVisualization = ({ data }) => {
                               ) : (
                                 <Box sx={{ textAlign: 'center', p: 4 }}>
                                   <Typography variant="body1">
-                                    No test case generated yet.
+                                    No test case generated yet for {selectedNode.data.key}.
                                   </Typography>
+                                  {testCaseGenerationError ? (
+                                    <Alert severity="error" sx={{ my: 2 }}>
+                                      {testCaseGenerationError}
+                                    </Alert>
+                                  ) : null}
                                   <Button 
                                     variant="contained" 
                                     color="primary"
                                     sx={{ mt: 2 }}
-                                    onClick={handleCreateTestCase}
+                                    onClick={() => {
+                                      // Create a temporary context menu node for test case generation
+                                      const tempContextNode = selectedNode;
+                                      setContextMenuNode(tempContextNode);
+                                      handleCreateTestCase();
+                                    }}
+                                    disabled={isGeneratingTestCase}
                                   >
-                                    Generate Test Case
+                                    {isGeneratingTestCase ? 'Generating...' : 'Generate Test Case'}
                                   </Button>
                                 </Box>
                               )}
