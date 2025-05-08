@@ -11,7 +11,7 @@ const AppHeader = () => {
       <Toolbar>
         <HubIcon sx={{ mr: 2 }} />
         <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-          JIRA Relationship Visualizer
+          InteliQa.Ai
         </Typography>
         <Box>
           {location.pathname !== '/' && (

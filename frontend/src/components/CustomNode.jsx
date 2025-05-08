@@ -26,6 +26,31 @@ const CustomNode = ({ data, type }) => {
         return '#9e9e9e'; // Gray for other nodes
     }
   };
+  
+  // Get node style with special handling for task-type issues
+  const getNodeStyle = () => {
+    const baseStyle = {
+      backgroundColor: getNodeColor(),
+      borderWidth: '2px',
+      borderStyle: 'solid',
+      borderColor: getNodeColor(),
+      padding: '10px',
+    };
+    
+    // Check if it's a task-type issue
+    const isTask = data.issue_type?.toLowerCase() === 'task';
+    
+    if (isTask) {
+      return {
+        ...baseStyle,
+        borderStyle: 'dashed',
+        borderColor: '#6a0dad', // Purple border
+        boxShadow: '0 0 8px rgba(106, 13, 173, 0.5)', // Purple glow
+      };
+    }
+    
+    return baseStyle;
+  };
 
   // Get icon based on node type
   const getNodeIcon = () => {
@@ -71,7 +96,14 @@ const CustomNode = ({ data, type }) => {
           borderLeft: `5px solid ${getNodeColor()}`,
           borderRadius: '4px',
           overflow: 'hidden',
+          ...(data.issue_type?.toLowerCase() === 'task' && {
+            borderStyle: 'dashed',
+            borderWidth: '2px',
+            borderColor: '#6a0dad', // Purple for task types
+            boxShadow: '0 0 8px rgba(106, 13, 173, 0.5)'
+          })
         }}
+        data-issue-type={data.issue_type?.toLowerCase() === 'task' ? 'task' : undefined}
       >
         <Box 
           sx={{ 

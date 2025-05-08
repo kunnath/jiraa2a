@@ -111,6 +111,60 @@ export const apiService = {
       throw error;
     }
   },
+  
+  visualizeJiraProject: async (credentials) => {
+    const projectId = credentials.project_id || 'LEARNJIRA';
+    
+    console.log('Requesting project visualization with:', { 
+      ...credentials, 
+      api_token: '[MASKED]',
+      project_id: projectId 
+    });
+    
+    // Validate credentials before sending
+    if (!credentials || !credentials.username || !credentials.api_token || 
+        !credentials.base_url) {
+      console.error('Missing required fields in credentials for project visualization:', {
+        hasUsername: !!credentials?.username,
+        hasToken: !!credentials?.api_token,
+        hasBaseUrl: !!credentials?.base_url
+      });
+      throw new Error('Missing required credentials for visualization');
+    }
+    
+    // Use LEARNJIRA as default project ID if not specified
+    const requestData = {
+      ...credentials,
+      project_id: projectId
+    };
+    
+    try {
+      const response = await apiClient.post('/jira/visualize-project', requestData);
+      
+      // Validate response data
+      if (!response || !response.data) {
+        console.error('Empty response received for project visualization');
+        throw new Error('Empty response from API');
+      }
+      
+      console.log(`Retrieved ${response.data.nodes?.length || 0} JIRA issues from project ${projectId}`);
+      
+      // Make sure nodes and edges are arrays
+      if (!Array.isArray(response.data.nodes) || !Array.isArray(response.data.edges)) {
+        console.error('Invalid data format: nodes or edges are not arrays', response.data);
+        
+        // Try to recover by providing empty arrays if not present
+        if (!response.data.nodes) response.data.nodes = [];
+        if (!response.data.edges) response.data.edges = [];
+      }
+      
+      console.log('Project visualization data received, nodes:', response.data?.nodes?.length);
+      return response.data;
+    } catch (error) {
+      console.error('Failed to fetch project visualization data:', error);
+      throw error;
+    }
+  },
 
   getIssueDetails: async (credentials, issueKey) => {
     console.log(`Fetching detailed information for issue: ${issueKey}`);

@@ -82,6 +82,121 @@ async def fetch_issue(credentials: JiraCredentials, issue_key: str):
         except httpx.RequestError as e:
             raise HTTPException(status_code=500, detail=f"Error connecting to JIRA: {str(e)}")
 
+async def fetch_parent_issue(credentials: JiraCredentials, issue_data):
+    """Fetch the parent issue of a given JIRA issue"""
+    
+    # Validate input to avoid NoneType errors
+    if not issue_data or not isinstance(issue_data, dict):
+        return None
+    
+    # Check if the fields key exists
+    fields = issue_data.get("fields", {})
+    if not fields:
+        return None
+    
+    # Check for parent field - different JIRA instances might use different parent field names
+    # Common ones are "parent" or inside "customfield" with a key like "Epic Link"
+    parent_key = None
+    
+    # Check for standard parent field
+    if "parent" in fields and isinstance(fields["parent"], dict):
+        parent_key = fields["parent"].get("key")
+    
+    # If no standard parent field, check for Epic Link
+    elif "customfield_10014" in fields:  # Epic Link is often stored in this field
+        parent_key = fields.get("customfield_10014")
+    
+    # Check for any field that might contain "parent" in its name
+    else:
+        for field_name, field_value in fields.items():
+            if "parent" in field_name.lower() and field_value:
+                if isinstance(field_value, dict) and "key" in field_value:
+                    parent_key = field_value.get("key")
+                elif isinstance(field_value, str):
+                    parent_key = field_value
+                break
+    
+    if parent_key:
+        try:
+            parent_data = await fetch_issue(credentials, parent_key)
+            
+            # Safely get issue type
+            issue_type = "Unknown"
+            if parent_data and "fields" in parent_data:
+                if "issuetype" in parent_data["fields"]:
+                    issue_type = parent_data["fields"]["issuetype"].get("name", "Unknown")
+            
+            return {
+                "key": parent_key,
+                "data": parent_data,
+                "relationship": "is child of",  # The current issue is a child of the parent
+                "direction": "inward",  # Parent is inward from child
+                "issue_type": issue_type
+            }
+        except HTTPException as e:
+            print(f"Error fetching parent issue {parent_key}: {str(e)}")
+            return None
+        except Exception as e:
+            print(f"Unexpected error with parent issue {parent_key}: {str(e)}")
+            return None
+    
+    return None
+
+async def fetch_project_issues(credentials: JiraCredentials, project_key: str, max_results: int = 100):
+    """
+    Fetch all issues from a specific JIRA project
+    
+    Args:
+        credentials: JIRA credentials
+        project_key: The project key (e.g., "LEARNJIRA")
+        max_results: Maximum number of issues to fetch (default: 100)
+        
+    Returns:
+        List of issue data dictionaries
+    """
+    if not project_key:
+        return []
+        
+    headers = get_auth_header(credentials)
+    
+    # JQL query to fetch issues from the project
+    jql = f"project = {project_key} ORDER BY created DESC"
+    
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            url = f"{credentials.base_url}/rest/api/2/search"
+            params = {
+                "jql": jql,
+                "maxResults": max_results,
+                "fields": "summary,issuetype,status,description,issuelinks,parent"
+            }
+            
+            print(f"Fetching issues for project: {project_key}")
+            response = await client.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            
+            data = response.json()
+            if not data or "issues" not in data:
+                print(f"No issues found for project: {project_key}")
+                return []
+                
+            print(f"Found {len(data['issues'])} issues for project {project_key}")
+            return data["issues"]
+    except httpx.HTTPStatusError as e:
+        print(f"HTTP error fetching project issues: {e}")
+        if e.response.status_code == 401:
+            raise HTTPException(status_code=401, detail="Authentication failed. Check your JIRA credentials.")
+        elif e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"JIRA project {project_key} not found.")
+        else:
+            raise HTTPException(status_code=e.response.status_code, detail=f"JIRA API error: {str(e)}")
+    except httpx.RequestError as e:
+        print(f"Request error fetching project issues: {e}")
+        raise HTTPException(status_code=500, detail=f"Error connecting to JIRA: {str(e)}")
+    except Exception as e:
+        print(f"Unexpected error fetching project issues: {e}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+        
 async def fetch_linked_issues(credentials: JiraCredentials, issue_data):
     """Extract and fetch all linked issues from a JIRA issue"""
     linked_issues = []
@@ -141,66 +256,6 @@ async def fetch_linked_issues(credentials: JiraCredentials, issue_data):
                 pass
     
     return linked_issues
-
-async def fetch_parent_issue(credentials: JiraCredentials, issue_data):
-    """Extract and fetch parent issue from a JIRA issue"""
-    
-    # Validate input to avoid NoneType errors
-    if not issue_data or not isinstance(issue_data, dict):
-        return None
-    
-    # Check if the fields key exists
-    fields = issue_data.get("fields", {})
-    if not fields:
-        return None
-    
-    # Check for parent field - different JIRA instances might use different parent field names
-    # Common ones are "parent" or inside "customfield" with a key like "Epic Link"
-    parent_key = None
-    
-    # Check for standard parent field
-    if "parent" in fields and isinstance(fields["parent"], dict):
-        parent_key = fields["parent"].get("key")
-    
-    # If no standard parent field, check for Epic Link
-    elif "customfield_10014" in fields:  # Epic Link is often stored in this field
-        parent_key = fields.get("customfield_10014")
-    
-    # Check for any field that might contain "parent" in its name
-    else:
-        for field_name, field_value in fields.items():
-            if "parent" in field_name.lower() and field_value:
-                if isinstance(field_value, dict) and "key" in field_value:
-                    parent_key = field_value.get("key")
-                elif isinstance(field_value, str):
-                    parent_key = field_value
-                break
-    
-    if parent_key:
-        try:
-            parent_data = await fetch_issue(credentials, parent_key)
-            
-            # Safely get issue type
-            issue_type = "Unknown"
-            if parent_data and "fields" in parent_data:
-                if "issuetype" in parent_data["fields"]:
-                    issue_type = parent_data["fields"]["issuetype"].get("name", "Unknown")
-            
-            return {
-                "key": parent_key,
-                "data": parent_data,
-                "relationship": "is child of",  # The current issue is a child of the parent
-                "direction": "inward",  # Parent is inward from child
-                "issue_type": issue_type
-            }
-        except HTTPException as e:
-            print(f"Error fetching parent issue {parent_key}: {str(e)}")
-            return None
-        except Exception as e:
-            print(f"Unexpected error with parent issue {parent_key}: {str(e)}")
-            return None
-    
-    return None
 
 def process_issue_node(issue_data, node_type="central"):
     """Convert JIRA issue data to a node for visualization"""
@@ -430,6 +485,124 @@ async def visualize_jira(credentials: JiraCredentials):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing JIRA data: {str(e)}")
 
+@app.post("/api/jira/visualize-project", response_model=GraphData)
+async def visualize_jira_project(credentials: JiraCredentials):
+    """
+    Fetch all issues from a JIRA project and build a visualization graph
+    """
+    try:
+        # Use project_id from credentials as the project key
+        project_key = credentials.project_id
+        
+        if not project_key:
+            raise HTTPException(status_code=400, detail="Missing project key. Please provide a valid JIRA project key.")
+            
+        print(f"Visualizing entire project: {project_key}")
+        
+        # Fetch all issues in the project
+        issues = await fetch_project_issues(credentials, project_key)
+        
+        if not issues:
+            raise HTTPException(status_code=404, detail=f"No issues found for project {project_key}")
+            
+        # Initialize graph data
+        nodes = []
+        edges = []
+        processed_issues = {}
+        
+        # Process each issue
+        for issue in issues:
+            if not issue or "id" not in issue:
+                continue
+                
+            issue_id = issue.get("id")
+            if issue_id in processed_issues:
+                continue
+                
+            # Determine issue type category
+            issue_type = issue.get("fields", {}).get("issuetype", {}).get("name", "").lower()
+            issue_type_category = "related"
+            
+            if "requirement" in issue_type:
+                issue_type_category = "requirement"
+            elif "test" in issue_type:
+                issue_type_category = "test"
+            elif "bug" in issue_type or "defect" in issue_type:
+                issue_type_category = "defect"
+            elif "story" in issue_type:
+                issue_type_category = "central"
+            elif "epic" in issue_type:
+                issue_type_category = "parent"
+                
+            # Process node and add it
+            node = process_issue_node(issue, issue_type_category)
+            nodes.append(node)
+            processed_issues[issue_id] = True
+            
+            # Process parent-child relationships
+            if "fields" in issue and "parent" in issue["fields"] and issue["fields"]["parent"]:
+                parent_key = issue["fields"]["parent"].get("key")
+                if parent_key:
+                    # Find if we already have this parent in our nodes
+                    parent_id = None
+                    for existing_node in nodes:
+                        if existing_node.get("data", {}).get("key") == parent_key:
+                            parent_id = existing_node.get("data", {}).get("id")
+                            break
+                    
+                    if parent_id:
+                        # Create edge from child to parent
+                        edges.append(process_edge(issue_id, parent_id, "is child of"))
+            
+            # Process issue links
+            if "fields" in issue and "issuelinks" in issue["fields"]:
+                for link in issue["fields"]["issuelinks"]:
+                    if not link:
+                        continue
+                        
+                    # Handle inward links (another issue --> this issue)
+                    if "inwardIssue" in link:
+                        inward_key = link["inwardIssue"].get("key")
+                        inward_id = link["inwardIssue"].get("id")
+                        if inward_id and inward_key:
+                            # Check if we already have this issue in our nodes
+                            linked_id = None
+                            for existing_node in nodes:
+                                if existing_node.get("data", {}).get("key") == inward_key:
+                                    linked_id = existing_node.get("data", {}).get("id")
+                                    break
+                            
+                            if linked_id:
+                                relationship = link.get("type", {}).get("inward", "is linked to")
+                                edges.append(process_edge(linked_id, issue_id, relationship))
+                    
+                    # Handle outward links (this issue --> another issue)
+                    if "outwardIssue" in link:
+                        outward_key = link["outwardIssue"].get("key")
+                        outward_id = link["outwardIssue"].get("id")
+                        if outward_id and outward_key:
+                            # Check if we already have this issue in our nodes
+                            linked_id = None
+                            for existing_node in nodes:
+                                if existing_node.get("data", {}).get("key") == outward_key:
+                                    linked_id = existing_node.get("data", {}).get("id")
+                                    break
+                            
+                            if linked_id:
+                                relationship = link.get("type", {}).get("outward", "is linked to")
+                                edges.append(process_edge(issue_id, linked_id, relationship))
+                                
+        # Return the visualization data
+        return {"nodes": nodes, "edges": edges}
+    
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Error visualizing project: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error processing JIRA data: {str(e)}")
+        
 @app.post("/api/jira/test-connection")
 async def test_connection(credentials: JiraCredentials):
     """Test JIRA API connection with provided credentials"""

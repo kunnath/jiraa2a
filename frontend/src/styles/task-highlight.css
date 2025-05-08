@@ -1,0 +1,37 @@
+/* Task highlight styles for visualizing task-type issues */
+
+.react-flow__node[data-issue-type="task"]::after {
+  content: '✓ Test';
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  background-color: #6a0dad;
+  color: white;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+}
+
+.react-flow__node[data-issue-type="task"] {
+  animation: pulse-border 2s infinite;
+}
+
+@keyframes pulse-border {
+  0% {
+    box-shadow: 0 0 0 0 rgba(106, 13, 173, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(106, 13, 173, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(106, 13, 173, 0);
+  }
+}
+
+/* Add a special hover style for task nodes */
+.react-flow__node[data-issue-type="task"]:hover {
+  transform: scale(1.03);
+  transition: transform 0.2s ease;
+}

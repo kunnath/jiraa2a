@@ -11,7 +11,8 @@ import {
   Alert,
   Snackbar,
   Switch,
-  FormControlLabel
+  FormControlLabel,
+  Checkbox
 } from '@mui/material';
 import { apiService } from '../services/apiService';
 
@@ -28,6 +29,7 @@ const JiraForm = ({ onVisualizationData }) => {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
   const [useDefaultCredentials, setUseDefaultCredentials] = useState(true);
+  const [visualizeWholeProject, setVisualizeWholeProject] = useState(false);
   const [defaultCredentials, setDefaultCredentials] = useState(null);
   const [isLoadingDefaults, setIsLoadingDefaults] = useState(true);
 
@@ -111,6 +113,7 @@ const JiraForm = ({ onVisualizationData }) => {
       // Save credentials to session storage 
       // Note: In a production app, you would handle this more securely
       // This is only for demonstration purposes to enable the description feature
+      sessionStorage.setItem('jiraFormData', JSON.stringify(formData));
       sessionStorage.setItem('jiraCredentials', JSON.stringify({
         username: formData.username,
         api_token: formData.api_token,
@@ -118,26 +121,57 @@ const JiraForm = ({ onVisualizationData }) => {
         project_id: formData.project_id
       }));
       
-      // If central_jira_id is provided, visualize immediately
-      if (formData.central_jira_id && formData.central_jira_id.trim()) {
-        const data = await apiService.visualizeJira(formData);
-        console.log('Received visualization data:', data);
+      let data;
+      
+      // Visualize entire project if the checkbox is checked
+      if (visualizeWholeProject) {
+        // Make sure project_id is set to LEARNJIRA if not specified
+        const projectData = {
+          ...formData,
+          project_id: formData.project_id || 'LEARNJIRA'
+        };
         
-        if (!data || !data.nodes || !data.edges) {
-          throw new Error('Invalid data format received from API');
+        console.log('Visualizing entire project:', projectData.project_id);
+        setError(null); // Clear any previous errors
+        
+        try {
+          // Show a loading message for large project loads
+          setTimeout(() => {
+            if (loading) {
+              setError('Loading all issues from project - this may take some time for large projects...');
+            }
+          }, 2000);
+          
+          data = await apiService.visualizeJiraProject(projectData);
+          
+          console.log(`Loaded ${data.nodes?.length || 0} issues from project ${projectData.project_id}`);
+        } catch (err) {
+          console.error("Error visualizing project:", err);
+          throw err; // Re-throw to be caught by outer catch block
         }
-        
-        if (data.nodes.length === 0) {
-          throw new Error('No JIRA issues found for visualization');
-        }
-        
-        onVisualizationData(data);
-        navigate('/visualization');
-      } else {
-        // If no central_jira_id, just navigate to visualization page
-        // where user can input it later
-        navigate('/visualization');
       }
+      // Otherwise, visualize a specific issue if central_jira_id is provided
+      else if (formData.central_jira_id && formData.central_jira_id.trim()) {
+        data = await apiService.visualizeJira(formData);
+      }
+      // If neither option is chosen, just navigate to the visualization page
+      else {
+        navigate('/visualization');
+        return;
+      }
+      
+      console.log('Received visualization data:', data);
+      
+      if (!data || !data.nodes || !data.edges) {
+        throw new Error('Invalid data format received from API');
+      }
+      
+      if (data.nodes.length === 0) {
+        throw new Error('No JIRA issues found for visualization');
+      }
+      
+      onVisualizationData(data);
+      navigate('/visualization');
     } catch (err) {
       console.error('Visualization error:', err);
       setError(err.message || 'Failed to fetch JIRA data');
@@ -147,8 +181,20 @@ const JiraForm = ({ onVisualizationData }) => {
   };
 
   const validateForm = () => {
-    // Required fields (except central_jira_id which is now optional)
-    const requiredFields = ['username', 'api_token', 'base_url', 'project_id'];
+    // Required fields for all scenarios
+    const baseRequiredFields = ['username', 'api_token', 'base_url'];
+    let requiredFields = [...baseRequiredFields];
+    
+    // If visualizing whole project, project_id is optional (will default to LEARNJIRA)
+    if (visualizeWholeProject) {
+      // We won't add project_id as required - LEARNJIRA will be used as default
+      console.log('Visualizing all issues with project ID:', formData.project_id || 'LEARNJIRA');
+    }
+    // Add central_jira_id as required if not visualizing whole project and no project_id
+    else if (!formData.central_jira_id && !formData.project_id) {
+      setError('Please provide either a Project ID or a Central JIRA ID');
+      return false;
+    }
     
     for (const key of requiredFields) {
       if (!formData[key].trim()) {
@@ -168,6 +214,12 @@ const JiraForm = ({ onVisualizationData }) => {
       setFormData({ ...formData, base_url: formData.base_url.slice(0, -1) });
     }
     
+    // Validate project_id format if visualizing whole project and project_id is provided
+    if (visualizeWholeProject && formData.project_id && !formData.project_id.match(/^[A-Z0-9]+$/)) {
+      setError('Project ID should typically be uppercase letters (e.g., LEARNJIRA)');
+      return false;
+    }
+    
     return true;
   };
 
@@ -179,7 +231,7 @@ const JiraForm = ({ onVisualizationData }) => {
     <Container maxWidth="md">
       <Paper elevation={3} sx={{ p: 4, mt: 4 }}>
         <Typography variant="h4" component="h1" gutterBottom>
-          JIRA Relationship Visualizer
+          InteliQa.Ai
         </Typography>
         <Typography variant="body1" color="text.secondary" paragraph>
           Connect to JIRA and visualize the relationships between issues
@@ -245,26 +297,44 @@ const JiraForm = ({ onVisualizationData }) => {
           />
           <TextField
             margin="normal"
-            required
             fullWidth
             id="project_id"
-            label="Project ID"
+            label={"Project ID"}
             name="project_id"
-            placeholder="e.g. PROJECT"
+            placeholder={"LEARNJIRA"}
             value={formData.project_id}
             onChange={handleChange}
             disabled={isLoadingDefaults}
+            helperText={visualizeWholeProject ? "LEARNJIRA will be used as default if empty" : "Optional: LEARNJIRA will be used if left empty"}
           />
+          
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={visualizeWholeProject}
+                onChange={(e) => setVisualizeWholeProject(e.target.checked)}
+                color="primary"
+              />
+            }
+            label="Visualize all issues in the project"
+            sx={{ mt: 2, mb: 1 }}
+          />
+          
           <TextField
             margin="normal"
+            required={!visualizeWholeProject && !formData.project_id}
             fullWidth
             id="central_jira_id"
-            label="Central JIRA ID (Optional)"
+            label={visualizeWholeProject ? "Central JIRA ID (Optional)" : "Central JIRA ID"}
             name="central_jira_id"
             placeholder="e.g. PROJECT-123"
             value={formData.central_jira_id}
             onChange={handleChange}
-            helperText="Can be provided later in the visualization page"
+            helperText={visualizeWholeProject 
+              ? "Optional when visualizing all issues" 
+              : "Required if Project ID is not provided"
+            }
+            disabled={visualizeWholeProject}
           />
           
           {error && (

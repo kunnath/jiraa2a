@@ -13,6 +13,8 @@ import ReactFlow, {
 import dagre from 'dagre';
 import 'reactflow/dist/style.css';
 import '../styles/visualization.css';
+import '../styles/task-highlight.css';
+import JiraIdsList from './JiraIdsList';
 import { 
   Box, 
   Typography, 
@@ -41,7 +43,8 @@ import {
   LinearProgress,
   Menu,
   ListItemIcon,
-  ListItemText
+  ListItemText,
+  Avatar
 } from '@mui/material';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import PictureAsPdfIcon from '@mui/icons-material/PictureAsPdf';
@@ -63,6 +66,29 @@ import TextRotationNoneIcon from '@mui/icons-material/TextRotationNone';
 import CreateIcon from '@mui/icons-material/Create';
 import InfoIcon from '@mui/icons-material/Info';
 import FileCopyIcon from '@mui/icons-material/FileCopy';
+import LegendToggleIcon from '@mui/icons-material/LegendToggle';
+import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
+import CloseIcon from '@mui/icons-material/Close';
+import VisibilityIcon from '@mui/icons-material/Visibility';
+import DescriptionIcon from '@mui/icons-material/Description';
+import CodeIcon from '@mui/icons-material/Code';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import KeyIcon from '@mui/icons-material/Key';
+import PersonOutlineIcon from '@mui/icons-material/PersonOutline';
+import RecordVoiceOverIcon from '@mui/icons-material/RecordVoiceOver';
+import CalendarTodayIcon from '@mui/icons-material/CalendarToday';
+import LinkIcon from '@mui/icons-material/Link';
+import BlockIcon from '@mui/icons-material/Block';
+import PriorityHighIcon from '@mui/icons-material/PriorityHigh';
+import LowPriorityIcon from '@mui/icons-material/LowPriority';
+import FlagIcon from '@mui/icons-material/Flag';
+import ArrowRightAltIcon from '@mui/icons-material/ArrowRightAlt';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import KeyboardArrowLeftIcon from '@mui/icons-material/KeyboardArrowLeft';
+import KeyboardArrowRightIcon from '@mui/icons-material/KeyboardArrowRight';
 import { toPng, toJpeg } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 
@@ -145,6 +171,7 @@ const getLayoutedElements = (nodes, edges, direction = 'TB') => {
         };
       }
       
+      // Add this return statement to return the calculated position
       return {
         ...node,
         position: {
@@ -293,6 +320,12 @@ const JiraVisualization = ({ data }) => {
   const [centralJiraId, setCentralJiraId] = useState('');
   const [showJiraIdInput, setShowJiraIdInput] = useState(false);
   const [loadingVisualization, setLoadingVisualization] = useState(false);
+  
+  // State for visualization legend minimize/maximize
+  const [legendMinimized, setLegendMinimized] = useState(false);
+  
+  // State for issue details sidebar minimize/maximize
+  const [sidebarMinimized, setSidebarMinimized] = useState(false);
   
   useEffect(() => {
     console.log("JiraVisualization received data:", data);
@@ -1049,7 +1082,14 @@ const JiraVisualization = ({ data }) => {
       // Check if issue type is suitable for test case generation
       const issueType = currentIssueDetails.fields.issuetype?.name?.toLowerCase() || 
                        contextMenuNode.data.issue_type?.toLowerCase() || '';
-      if (issueType !== 'requirement' && issueType !== 'story' && issueType !== 'task' && issueType !== 'feature') {
+      
+      // Explicitly support task-type issues
+      if (issueType === 'task') {
+        console.log('Generating test case for task-type issue as requested in the requirements');
+        // Add any special handling for task-type issues here
+        // For example, we might want to generate different types of test steps based on task type
+      }
+      else if (issueType !== 'requirement' && issueType !== 'story' && issueType !== 'feature') {
         console.warn(`Issue type '${issueType}' might not be ideal for test case generation. Proceeding anyway.`);
       }
       
@@ -1354,8 +1394,28 @@ const JiraVisualization = ({ data }) => {
   // Function to handle Central JIRA ID submission
   const handleCentralJiraIdSubmit = async (e) => {
     e.preventDefault();
+    // Validate JIRA ID input
     if (!centralJiraId || !centralJiraId.trim()) {
       setError('Please enter a Central JIRA ID');
+      return;
+    }
+    
+    // Validate JIRA ID format (usually PROJECT-123)
+    const jiraIdPattern = /^[A-Za-z]+-\d+$/;
+    if (!jiraIdPattern.test(centralJiraId.trim())) {
+      setError('Invalid JIRA ID format. Please use format like PROJECT-123');
+      return;
+    }
+    
+    // Validate JIRA credentials are available
+    if (!jiraCredentials || !jiraCredentials.username || !jiraCredentials.api_token || !jiraCredentials.base_url) {
+      console.error('Missing JIRA credentials:', {
+        hasCredentials: !!jiraCredentials,
+        hasUsername: !!jiraCredentials?.username,
+        hasToken: !!jiraCredentials?.api_token,
+        hasBaseUrl: !!jiraCredentials?.base_url,
+      });
+      setError('Missing JIRA connection credentials. Please configure your JIRA connection first.');
       return;
     }
     
@@ -1366,14 +1426,38 @@ const JiraVisualization = ({ data }) => {
       // Create request with credentials and central JIRA ID
       const requestData = {
         ...jiraCredentials,
-        central_jira_id: centralJiraId
+        central_jira_id: centralJiraId.trim() // Use trimmed value
       };
       
+      // Make API request with proper error handling
       const visualizationData = await apiService.visualizeJira(requestData);
       
-      if (!visualizationData || !visualizationData.nodes || visualizationData.nodes.length === 0) {
-        throw new Error('No JIRA issues found for visualization');
+      // Validate returned data structure
+      if (!visualizationData) {
+        throw new Error('No data returned from visualization request');
       }
+      
+      if (!Array.isArray(visualizationData.nodes)) {
+        console.error('Invalid response: nodes is not an array', visualizationData);
+        throw new Error('Invalid data structure received from server');
+      }
+      
+      if (visualizationData.nodes.length === 0) {
+        throw new Error(`No JIRA issues found for ID: ${centralJiraId}. Please check if the issue exists and you have proper access.`);
+      }
+      
+      // Check for critical node data
+      const hasInvalidNodes = visualizationData.nodes.some(node => !node || !node.id || !node.data);
+      if (hasInvalidNodes) {
+        console.warn('Some nodes have invalid format:', visualizationData.nodes.filter(n => !n || !n.id || !n.data));
+        // We'll continue, as the visualization can handle some invalid nodes
+      }
+      
+      // Log success
+      console.log('Visualization successful:', {
+        nodesCount: visualizationData.nodes.length,
+        edgesCount: visualizationData.edges?.length || 0
+      });
       
       // Update the session storage with this data
       sessionStorage.setItem('jiraVisualizationData', JSON.stringify(visualizationData));
@@ -1382,7 +1466,18 @@ const JiraVisualization = ({ data }) => {
       window.location.reload();
     } catch (err) {
       console.error('Visualization error:', err);
-      setError(err.message || 'Failed to fetch JIRA data');
+      // Provide more helpful error message based on error type
+      if (err.status === 401 || err.message?.includes('Unauthorized')) {
+        setError('Authentication failed. Please check your JIRA credentials.');
+      } else if (err.status === 404 || err.message?.includes('found')) {
+        setError(`JIRA issue ${centralJiraId} not found. Please verify the issue exists.`);
+      } else if (err.status === 403) {
+        setError('Permission denied. You do not have access to this JIRA issue.');
+      } else if (!navigator.onLine) {
+        setError('Network connection lost. Please check your internet connection.');
+      } else {
+        setError(err.message || 'Failed to fetch JIRA data. See console for details.');
+      }
     } finally {
       setLoadingVisualization(false);
     }
@@ -1424,21 +1519,53 @@ const JiraVisualization = ({ data }) => {
             />
             
             {error && (
-              <Alert severity="error" sx={{ mt: 2 }}>
-                {error}
+              <Alert 
+                severity="error" 
+                sx={{ mt: 2 }}
+                action={
+                  <IconButton
+                    aria-label="close"
+                    color="inherit"
+                    size="small"
+                    onClick={() => setError(null)}
+                  >
+                    <CloseIcon fontSize="inherit" />
+                  </IconButton>
+                }
+              >
+                <Typography variant="body2">{error}</Typography>
               </Alert>
             )}
             
-            <Box sx={{ mt: 3 }}>
+            <Box sx={{ mt: 3, display: 'flex', alignItems: 'center' }}>
               <Button
                 type="submit"
                 variant="contained"
                 color="primary"
                 disabled={loadingVisualization}
+                startIcon={loadingVisualization ? null : <VisibilityIcon />}
+                sx={{ position: 'relative' }}
               >
-                Visualize
+                {loadingVisualization ? 'Connecting...' : 'Visualize'}
+                {loadingVisualization && (
+                  <CircularProgress 
+                    size={24} 
+                    sx={{ 
+                      position: 'absolute',
+                      top: '50%',
+                      left: '50%',
+                      marginTop: '-12px',
+                      marginLeft: '-12px' 
+                    }} 
+                  />
+                )}
               </Button>
-              {loadingVisualization && <CircularProgress size={24} sx={{ ml: 2 }} />}
+              <Typography 
+                variant="caption" 
+                sx={{ ml: 2, color: 'text.secondary', opacity: loadingVisualization ? 1 : 0 }}
+              >
+                Retrieving JIRA data and building visualization...
+              </Typography>
             </Box>
           </Box>
         </Paper>
@@ -1467,50 +1594,35 @@ const JiraVisualization = ({ data }) => {
           
           {/* Visualization Tab */}
           <TabPanel value={tabValue} index={0} sx={{ flexGrow: 1 }}>
-            <Box sx={{ p: 2, display: 'flex', gap: 2, flexWrap: 'wrap', alignItems: 'center' }}>
-              {/* Search */}
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <TextField
-                  size="small"
-                  placeholder="Search issues..."
-                  value={searchTerm}
-                  onChange={handleSearchChange}
-                  InputProps={{
-                    startAdornment: (
-                      <InputAdornment position="start">
-                        <SearchIcon />
-                      </InputAdornment>
-                    ),
-                  }}
-                  sx={{ minWidth: '250px' }}
-                />
-                <Tooltip title="Highlight connected issues">
-                  <Button 
-                    variant="outlined" 
-                    size="small" 
-                    onClick={performAdvancedSearch}
-                    disabled={!searchTerm}
-                    color={advancedSearchActive ? 'secondary' : 'primary'}
-                  >
-                    Highlight Path
-                  </Button>
-                </Tooltip>
-                {advancedSearchActive && (
-                  <Chip 
-                    label={`${highlightedNodes.size} issues highlighted`} 
-                    color="secondary" 
-                    size="small" 
-                    onDelete={() => {
-                      setAdvancedSearchActive(false);
-                      setHighlightedNodes(new Set());
-                      setFilteredNodes(nodes);
-                    }}
-                  />
-                )}
-              </Box>
+            {/* Issue Type Summary - Show when visualizing whole project */}
+            {data?.nodes?.length > 10 && (
+              <JiraIssueTypeSummary nodes={data.nodes} />
+            )}
+            
+            {/* Filter Menu - Prominently placed at the top for better visibility */}
+            <Box sx={{ 
+              p: 2, 
+              mb: 1,
+              borderBottom: '2px solid rgba(63, 81, 181, 0.2)',
+              backgroundColor: 'rgba(63, 81, 181, 0.03)',
+              borderRadius: '4px 4px 0 0',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2
+            }}>
+              <Typography variant="h6" sx={{ 
+                fontWeight: 600, 
+                color: '#3f51b5', 
+                mb: 1,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1
+              }}>
+                <FilterAltIcon /> Filter Issues by Type
+              </Typography>
               
-              {/* Filters */}
-              <Box sx={{ display: 'flex', gap: 1 }}>
+              {/* Filter Chips - Prominently displayed at the top */}
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1.5 }}>
                 <Tooltip title="Central Issue">
                   <Chip
                     label="Central"
@@ -1563,653 +1675,1526 @@ const JiraVisualization = ({ data }) => {
                     sx={{ cursor: 'pointer' }}
                   />
                 </Tooltip>
+                {/* Add special highlight for task-type issues for test case generation */}
+                <Tooltip title="Task-Type Issues (For Test Cases)">
+                  <Chip
+                    icon={<CreateIcon />}
+                    label="Tasks (Test Cases)"
+                    color="secondary"
+                    variant="outlined"
+                    onClick={() => {
+                      // Filter to show only task-type issues
+                      const taskNodes = nodes.filter(
+                        node => node?.data?.issue_type?.toLowerCase() === 'task'
+                      );
+                      
+                      setFilteredNodes(taskNodes);
+                      setSearchTerm('task');
+                    }}
+                    sx={{ 
+                      cursor: 'pointer',
+                      borderColor: '#6a0dad',
+                      borderWidth: '2px',
+                      fontWeight: 'bold'
+                    }}
+                  />
+                </Tooltip>
               </Box>
               
-              {/* Layout Direction */}
-              <Box>
-                <Tooltip title="Vertical Layout">
-                  <IconButton 
-                    color={layoutDirection === 'TB' ? 'primary' : 'default'} 
-                    onClick={() => changeLayoutDirection('TB')}
-                  >
-                    <TextRotateVerticalIcon />
-                  </IconButton>
-                </Tooltip>
-                <Tooltip title="Horizontal Layout">
-                  <IconButton 
-                    color={layoutDirection === 'LR' ? 'primary' : 'default'} 
-                    onClick={() => changeLayoutDirection('LR')}
-                  >
-                    <TextRotationNoneIcon />
-                  </IconButton>
-                </Tooltip>
-              </Box>
-
-              {/* Export Options */}
-              <Box sx={{ marginLeft: 'auto' }}>
-                <Tooltip title="Export as PNG">
-                  <IconButton onClick={() => exportImage('png')}>
-                    <ImageIcon />
-                  </IconButton>
-                </Tooltip>
-                <Tooltip title="Export as JPEG">
-                  <IconButton onClick={() => exportImage('jpeg')}>
-                    <SaveAltIcon />
-                  </IconButton>
-                </Tooltip>
-                <Tooltip title="Export as PDF">
-                  <IconButton onClick={() => exportImage('pdf')}>
-                    <PictureAsPdfIcon />
-                  </IconButton>
-                </Tooltip>
-                <Tooltip title="Export data as CSV">
-                  <IconButton onClick={exportCSV}>
-                    <FileDownloadIcon />
-                  </IconButton>
-                </Tooltip>
-                <Tooltip title="Export as CSV">
-                  <IconButton onClick={exportCSV}>
-                    <FileDownloadIcon />
-                  </IconButton>
-                </Tooltip>
+              {/* Search and Controls Row */}
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                {/* Search */}
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <TextField
+                    size="small"
+                    placeholder="Search issues..."
+                    value={searchTerm}
+                    onChange={handleSearchChange}
+                    InputProps={{
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchIcon />
+                        </InputAdornment>
+                      ),
+                    }}
+                    sx={{ minWidth: '250px' }}
+                  />
+                  <Tooltip title="Highlight connected issues">
+                    <Button 
+                      variant="outlined" 
+                      size="small" 
+                      onClick={performAdvancedSearch}
+                      disabled={!searchTerm}
+                      color={advancedSearchActive ? 'secondary' : 'primary'}
+                    >
+                      Highlight Path
+                    </Button>
+                  </Tooltip>
+                  {advancedSearchActive && (
+                    <Chip 
+                      label={`${highlightedNodes.size} issues highlighted`} 
+                      color="secondary" 
+                      size="small" 
+                      onDelete={() => {
+                        setAdvancedSearchActive(false);
+                        setHighlightedNodes(new Set());
+                        setFilteredNodes(nodes);
+                      }}
+                    />
+                  )}
+                </Box>
+                
+                {/* Layout Direction Controls */}
+                <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                  <Tooltip title="Vertical Layout">
+                    <IconButton 
+                      color={layoutDirection === 'TB' ? 'primary' : 'default'} 
+                      onClick={() => changeLayoutDirection('TB')}
+                    >
+                      <TextRotateVerticalIcon />
+                    </IconButton>
+                  </Tooltip>
+                  <Tooltip title="Horizontal Layout">
+                    <IconButton 
+                      color={layoutDirection === 'LR' ? 'primary' : 'default'}
+                      onClick={() => changeLayoutDirection('LR')}
+                    >
+                      <TextRotationNoneIcon />
+                    </IconButton>
+                  </Tooltip>
+                  
+                  {/* Export Options */}
+                  <Box sx={{ display: 'flex', alignItems: 'center', ml: 1 }}>
+                    <Tooltip title="Export as PNG">
+                      <IconButton onClick={() => exportImage('png')}>
+                        <ImageIcon />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Export as PDF">
+                      <IconButton onClick={() => exportImage('pdf')}>
+                        <PictureAsPdfIcon />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Export data as CSV">
+                      <IconButton onClick={exportCSV}>
+                        <FileDownloadIcon />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                </Box>
               </Box>
             </Box>
             
-            <Divider />
-            
-            {/* The Flow Chart */}
-            <Box ref={flowRef} className="reactflow-wrapper" sx={{ flexGrow: 1, position: 'relative', display: 'flex' }}>
-              <Box sx={{ flexGrow: 1, position: 'relative' }}>
-                {/* Context Menu */}
-                <Menu
-                  keepMounted
-                  open={contextMenu !== null}
-                  onClose={handleContextMenuClose}
-                  anchorReference="anchorPosition"
-                  anchorPosition={
-                    contextMenu !== null
-                      ? { top: contextMenu.mouseY, left: contextMenu.mouseX }
-                      : undefined
-                  }
-                >
-                  <MenuItem onClick={handleCreateTestCase}>
-                    <ListItemIcon>
-                      <CreateIcon fontSize="small" />
-                    </ListItemIcon>
-                    <ListItemText>Generate Test Case</ListItemText>
-                  </MenuItem>
-                  <MenuItem onClick={handleShowTestStatus}>
-                    <ListItemIcon>
-                      <InfoIcon fontSize="small" />
-                    </ListItemIcon>
-                    <ListItemText>Show Test Status</ListItemText>
-                  </MenuItem>
-                </Menu>
+            {/* Add Split View with JIRA IDs List and Visualization */}
+            <Box sx={{ display: 'flex', height: 'calc(100% - 140px)' }}>
+              {/* JIRA IDs List Panel with Central ID Prominent */}
+              <Box sx={{ width: '320px', overflow: 'hidden', borderRight: '1px solid #e0e0e0', display: { xs: 'none', md: 'block' } }}>
+                {/* Central JIRA ID Badge - New prominent display */}
+                {nodes.filter(node => node.type === 'central').map(centralNode => (
+                  <Box 
+                    key={centralNode.id}
+                    sx={{ 
+                      p: 2, 
+                      backgroundColor: 'rgba(255, 152, 0, 0.1)', 
+                      borderBottom: '1px solid rgba(255, 152, 0, 0.2)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center'
+                    }}
+                  >
+                    <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                      Central JIRA ID
+                    </Typography>
+                    <Button
+                      variant="outlined"
+                      color="warning"
+                      size="medium"
+                      onClick={() => {
+                        setSelectedNode(centralNode);
+                        fetchIssueDetails(centralNode);
+                        
+                        if (reactFlowInstance) {
+                          setTimeout(() => {
+                            reactFlowInstance.fitView({ 
+                              padding: 0.5,
+                              nodes: [centralNode.id]
+                            });
+                          }, 50);
+                        }
+                      }}
+                      sx={{ 
+                        fontSize: '1.1rem', 
+                        fontWeight: 'bold',
+                        letterSpacing: '0.5px',
+                        minWidth: '150px',
+                        mb: 1
+                      }}
+                    >
+                      {centralNode.data.key}
+                    </Button>
+                    <Typography variant="caption" noWrap sx={{ maxWidth: '280px', textAlign: 'center' }}>
+                      {centralNode.data.summary}
+                    </Typography>
+                  </Box>
+                ))}
                 
-                <ReactFlow
-                  nodes={displayedNodes}
-                  edges={displayedEdges}
-                  onNodesChange={onNodesChange}
-                  onEdgesChange={onEdgesChange}
-                  onNodeClick={onNodeClick}
-                  onNodeContextMenu={onNodeContextMenu}
-                  nodeTypes={nodeTypes}
-                  edgeTypes={edgeTypes}
-                  fitView
-                  nodesDraggable={true}
-                  nodesConnectable={false}
-                  onInit={setReactFlowInstance}
-                  attributionPosition="bottom-right"
-                  // Register drag event handlers
-                  onNodeDragStart={onNodeDragStart}
-                  onNodeDrag={onNodeDrag}
-                  onNodeDragStop={onNodeDragStop}
-                >
-                  <Background />
-                  <Controls />
-                  <MiniMap />
-                  
-                  {/* Floating Controls Panel */}
-                  <Panel position="top-right">
-                    <Paper elevation={3} sx={{ p: 1, borderRadius: 2 }}>
-                      <Stack direction="row" spacing={1}>
-                        <Tooltip title="Zoom In">
-                          <IconButton size="small" onClick={zoomIn}>
-                            <ZoomInIcon />
-                          </IconButton>
-                        </Tooltip>
-                        <Tooltip title="Zoom Out">
-                          <IconButton size="small" onClick={zoomOut}>
-                            <ZoomOutIcon />
-                          </IconButton>
-                        </Tooltip>
-                        <Tooltip title="Reset View">
-                          <IconButton size="small" onClick={resetView}>
-                            <RestartAltIcon />
-                          </IconButton>
-                        </Tooltip>
-                      </Stack>
-                    </Paper>
-                  </Panel>
-
-                  {/* Legend Panel */}
-                  <Panel position="bottom-right" className="legend-panel">
-                    <Paper elevation={3} sx={{ p: 2, borderRadius: 2, maxWidth: 250 }}>
-                      <Typography variant="subtitle2" gutterBottom>Legend</Typography>
-                      <Divider sx={{ mb: 1 }} />
-                      
-                      <Typography variant="body2" sx={{ fontWeight: 'bold', mt: 1 }}>Node Types:</Typography>
-                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mt: 0.5 }}>
-                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                          <Box sx={{ width: 16, height: 16, backgroundColor: '#ff9800', borderRadius: 1 }} />
-                          <Typography variant="body2">Central Issue</Typography>
-                        </Box>
-                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                          <Box sx={{ width: 16, height: 16, backgroundColor: '#9c27b0', borderRadius: 1 }} />
-                          <Typography variant="body2">Parent Issue</Typography>
-                        </Box>
-                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                          <Box sx={{ width: 16, height: 16, backgroundColor: '#4dabf5', borderRadius: 1 }} />
-                          <Typography variant="body2">Requirement</Typography>
-                        </Box>
-                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                          <Box sx={{ width: 16, height: 16, backgroundColor: '#66bb6a', borderRadius: 1 }} />
-                          <Typography variant="body2">Test</Typography>
-                        </Box>
-                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                          <Box sx={{ width: 16, height: 16, backgroundColor: '#f44336', borderRadius: 1 }} />
-                          <Typography variant="body2">Defect</Typography>
-                        </Box>
-                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                          <Box sx={{ width: 16, height: 16, backgroundColor: '#9e9e9e', borderRadius: 1 }} />
-                          <Typography variant="body2">Other</Typography>
-                        </Box>
-                      </Box>
-                      
-                      <Typography variant="body2" sx={{ fontWeight: 'bold', mt: 1 }}>Edge Types:</Typography>
-                      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, mt: 0.5 }}>
-                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                          <Box sx={{ width: 20, height: 2, backgroundColor: '#f44336' }} />
-                          <Typography variant="body2">Blocks/Depends</Typography>
-                        </Box>
-                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                          <Box sx={{ width: 20, height: 2, backgroundColor: '#66bb6a' }} />
-                          <Typography variant="body2">Tests/Verifies</Typography>
-                        </Box>
-                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                          <Box sx={{ width: 20, height: 2, backgroundColor: '#4dabf5' }} />
-                          <Typography variant="body2">Implements/Requires</Typography>
-                        </Box>
-                        <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
-                          <Box sx={{ width: 20, height: 2, backgroundColor: '#555' }} />
-                          <Typography variant="body2">Other Relationship</Typography>
-                        </Box>
-                      </Box>
-                    </Paper>
-                  </Panel>
-                </ReactFlow>
+                <JiraIdsList 
+                  nodes={nodes} 
+                  onSelect={(node) => {
+                    console.log("JIRA ID clicked:", node.data.key);
+                    setSelectedNode(node);
+                    fetchIssueDetails(node);
+                    
+                    // Fit view to highlight the selected node
+                    if (reactFlowInstance) {
+                      // Adding a slight delay helps the view update properly
+                      setTimeout(() => {
+                        reactFlowInstance.fitView({ 
+                          padding: 0.5,
+                          nodes: [node.id]
+                        });
+                      }, 50);
+                    }
+                  }}
+                  onFilterByType={(issueType) => {
+                    const typeNodes = nodes.filter(
+                      node => node?.data?.issue_type?.toLowerCase() === issueType.toLowerCase()
+                    );
+                    setFilteredNodes(typeNodes);
+                    setSearchTerm(issueType);
+                  }}
+                />
               </Box>
               
-              {/* Node Details Sidebar */}
-              {selectedNode && (
-                <Paper 
-                  elevation={2} 
+              {/* Main Visualization Area with side panel */}
+              <Box sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
+                <Divider />
+                
+                {/* The Flow Chart Container - adjusted width to make room for details panel */}
+                <Box 
+                  ref={flowRef} 
+                  className="reactflow-wrapper" 
                   sx={{ 
-                    width: 350, 
-                    borderLeft: '1px solid #e0e0e0',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    overflowY: 'auto'
+                    flexGrow: 1, 
+                    position: 'relative',
+                    width: selectedNode ? 
+                      (sidebarMinimized ? 'calc(100% - 50px)' : 'calc(100% - 380px)') : 
+                      '100%',
+                    height: '100%',
+                    transition: 'width 0.3s ease'
                   }}
                 >
-                  <Box sx={{ 
-                    p: 2, 
-                    backgroundColor: '#f5f5f5', 
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center'
-                  }}>
-                    <Typography variant="h6">Issue Details</Typography>
-                    <IconButton size="small" onClick={clearSelectedNode}>
-                      <RestartAltIcon fontSize="small" />
-                    </IconButton>
-                  </Box>
+                  {/* Context Menu */}
+                  <Menu
+                    keepMounted
+                    open={contextMenu !== null}
+                    onClose={handleContextMenuClose}
+                    anchorReference="anchorPosition"
+                    anchorPosition={
+                      contextMenu !== null
+                        ? { top: contextMenu.mouseY, left: contextMenu.mouseX }
+                        : undefined
+                    }
+                  >
+                    <MenuItem onClick={handleCreateTestCase}>
+                      <ListItemIcon>
+                        <CreateIcon fontSize="small" sx={{ color: '#6a0dad' }} />
+                      </ListItemIcon>
+                      <ListItemText primary="Generate Test Case (XRAY Format)" />
+                    </MenuItem>
+                    <MenuItem onClick={handleShowTestStatus}>
+                      <ListItemIcon>
+                        <InfoIcon fontSize="small" sx={{ color: '#3f51b5' }} />
+                      </ListItemIcon>
+                      <ListItemText primary="Show Test Case Status" />
+                    </MenuItem>
+                  </Menu>
                   
-                  {/* Basic Issue Details Tabs */}
-                  <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
-                    <Tabs 
-                      value={detailsTabValue} 
-                      onChange={(e, newValue) => setDetailsTabValue(newValue)} 
-                      variant="scrollable"
-                      scrollButtons="auto"
-                    >
-                      <Tab label="Overview" />
-                      <Tab label="Description" />
-                      <Tab label="JSON" />
-                      {showCreateTestCase && <Tab label="Test Case" />}
-                    </Tabs>
-                  </Box>
-                  
-                  {isLoadingDetails && (
-                    <LinearProgress color="primary" />
-                  )}
-                  
-                  {/* Overview Tab */}
-                  {detailsTabValue === 0 && (
-                    <Box sx={{ p: 2 }}>
-                      <Typography variant="subtitle1" fontWeight="bold" color="primary">
-                        {selectedNode.data.key}
-                      </Typography>
-                      <Typography variant="body1" gutterBottom>
-                        {selectedNode.data.summary}
-                      </Typography>
-                      
-                      <Box sx={{ mt: 2 }}>
-                        <Typography variant="subtitle2" color="text.secondary">
-                          Issue Type
-                        </Typography>
-                        <Typography variant="body2" gutterBottom>
-                          {selectedNode.data.issue_type}
-                        </Typography>
-                        
-                        <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
-                          Status
-                        </Typography>
-                        <Typography variant="body2" gutterBottom>
-                          {selectedNode.data.status}
-                        </Typography>
-                        
-                        {selectedNode.data.priority && (
-                          <>
-                            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
-                              Priority
+                  <ReactFlow
+                    nodes={displayedNodes}
+                    edges={displayedEdges}
+                    onNodesChange={onNodesChange}
+                    onEdgesChange={onEdgesChange}
+                    onNodeClick={onNodeClick}
+                    onNodeContextMenu={onNodeContextMenu}
+                    nodeTypes={nodeTypes}
+                    edgeTypes={edgeTypes}
+                    fitView
+                    nodesDraggable={true}
+                    nodesConnectable={false}
+                    onInit={setReactFlowInstance}
+                    attributionPosition="bottom-right"
+                    // Register drag event handlers
+                    onNodeDragStart={onNodeDragStart}
+                    onNodeDrag={onNodeDrag}
+                    onNodeDragStop={onNodeDragStop}
+                  >
+                    <Background />
+                    <Controls />
+                    <MiniMap />
+                    
+                    {/* Floating Controls Panel */}
+                    <Panel position="top-right">
+                      <Paper elevation={3} sx={{ p: 1, borderRadius: 2 }}>
+                        <Stack direction="row" spacing={1}>
+                          <Tooltip title="Zoom In">
+                            <IconButton size="small" onClick={zoomIn}>
+                              <ZoomInIcon />
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="Zoom Out">
+                            <IconButton size="small" onClick={zoomOut}>
+                              <ZoomOutIcon />
+                            </IconButton>
+                          </Tooltip>
+                          <Tooltip title="Reset View">
+                            <IconButton size="small" onClick={resetView}>
+                              <RestartAltIcon />
+                            </IconButton>
+                          </Tooltip>
+                        </Stack>
+                      </Paper>
+                    </Panel>
+
+                    {/* Enhanced Legend Panel */}
+                    <Panel position="bottom-right" className="legend-panel">
+                      <Paper 
+                        elevation={6} 
+                        sx={{ 
+                          p: 0,
+                          borderRadius: 2, 
+                          maxWidth: 300,
+                          overflow: 'hidden',
+                          boxShadow: '0 6px 24px rgba(0,0,0,0.12)',
+                          animation: 'slideInUp 0.5s cubic-bezier(0.23, 1, 0.32, 1)',
+                          '@keyframes slideInUp': {
+                            from: { transform: 'translateY(30px)', opacity: 0 },
+                            to: { transform: 'translateY(0)', opacity: 1 }
+                          },
+                          border: '1px solid rgba(0,0,0,0.05)',
+                          transition: 'all 0.3s ease'
+                        }}
+                      >
+                        <Box sx={{ 
+                          p: 2, 
+                          background: 'linear-gradient(135deg, #3f51b5 0%, #5c6bc0 100%)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 1,
+                          boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                          cursor: 'pointer'
+                        }} onClick={() => setLegendMinimized(!legendMinimized)}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <LegendToggleIcon sx={{ color: 'white', fontSize: 20 }} />
+                            <Typography variant="subtitle1" sx={{ color: 'white', fontWeight: 'bold' }}>
+                              Visualization Legend
                             </Typography>
-                            <Typography variant="body2" gutterBottom>
-                              {selectedNode.data.priority}
-                            </Typography>
-                          </>
-                        )}
+                          </Box>
+                          
+                          <IconButton 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setLegendMinimized(!legendMinimized);
+                            }}
+                            size="small"
+                            sx={{ 
+                              color: 'white', 
+                              '&:hover': {
+                                backgroundColor: 'rgba(255, 255, 255, 0.1)'
+                              }
+                            }}
+                          >
+                            {legendMinimized ? <ExpandMoreIcon /> : <ExpandLessIcon />}
+                          </IconButton>
+                        </Box>
                         
-                        {issueDetails && (
-                          <>
-                            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
-                              Assignee
-                            </Typography>
-                            <Typography variant="body2" gutterBottom>
-                              {issueDetails.assignee || "Unassigned"}
+                        {!legendMinimized && (
+                        <Box sx={{ 
+                          p: 2.5,
+                          background: 'white',
+                          backdropFilter: 'blur(8px)'
+                        }}>
+                          {/* Node Types Section */}
+                          <Box sx={{ mb: 3 }}>
+                            <Typography variant="subtitle2" sx={{ 
+                              fontWeight: 600, 
+                              mb: 1.5, 
+                              color: '#3f51b5',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 1,
+                              borderBottom: '1px solid rgba(0,0,0,0.06)',
+                              pb: 1
+                            }}>
+                              <AccountTreeIcon fontSize="small" />
+                              Issue Types
                             </Typography>
                             
-                            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
-                              Reporter
-                            </Typography>
-                            <Typography variant="body2" gutterBottom>
-                              {issueDetails.reporter || "Unknown"}
-                            </Typography>
-                            
-                            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 1 }}>
-                              Created
-                            </Typography>
-                            <Typography variant="body2" gutterBottom>
-                              {new Date(issueDetails.created).toLocaleDateString()}
-                            </Typography>
-                          </>
-                        )}
+                            <Box sx={{ 
+                              display: 'grid', 
+                              gridTemplateColumns: 'repeat(2, 1fr)',
+                              gap: 1.2 
+                            }}>
+                              <Tooltip title="Central issue in this visualization">
+                                <Chip
+                                  size="small"
+                                  avatar={<Avatar sx={{ bgcolor: '#ff9800' }}>C</Avatar>}
+                                  label="Central"
+                                  sx={{ 
+                                    bgcolor: 'rgba(255, 152, 0, 0.1)', 
+                                    color: '#ff9800',
+                                    transition: 'all 0.2s ease',
+                                    '&:hover': {
+                                      bgcolor: 'rgba(255, 152, 0, 0.18)',
+                                      transform: 'translateY(-2px)',
+                                    }
+                                  }}
+                                />
+                              </Tooltip>
+                              <Tooltip title="Parent of other issues">
+                                <Chip
+                                  size="small"
+                                  avatar={<Avatar sx={{ bgcolor: '#9c27b0' }}>P</Avatar>}
+                                  label="Parent"
+                                  sx={{ 
+                                    bgcolor: 'rgba(156, 39, 176, 0.1)', 
+                                    color: '#9c27b0',
+                                    transition: 'all 0.2s ease',
+                                    '&:hover': {
+                                      bgcolor: 'rgba(156, 39, 176, 0.18)',
+                                      transform: 'translateY(-2px)',
+                                    }
+                                  }}
+                                />
+                              </Tooltip>
+                              <Tooltip title="Requirements and specifications">
+                                <Chip
+                                  size="small"
+                                  avatar={<Avatar sx={{ bgcolor: '#4dabf5' }}>R</Avatar>}
+                                  label="Requirement"
+                                  sx={{ 
+                                    bgcolor: 'rgba(77, 171, 245, 0.1)', 
+                                    color: '#4dabf5',
+                                    transition: 'all 0.2s ease',
+                                    '&:hover': {
+                                      bgcolor: 'rgba(77, 171, 245, 0.18)',
+                                      transform: 'translateY(-2px)',
+                                    }
+                                  }}
+                                />
+                              </Tooltip>
+                              <Tooltip title="Test cases and test plans">
+                                <Chip
+                                  size="small"
+                                  avatar={<Avatar sx={{ bgcolor: '#66bb6a' }}>T</Avatar>}
+                                  label="Test"
+                                  sx={{ 
+                                    bgcolor: 'rgba(102, 187, 106, 0.1)', 
+                                    color: '#66bb6a',
+                                    transition: 'all 0.2s ease',
+                                    '&:hover': {
+                                      bgcolor: 'rgba(102, 187, 106, 0.18)',
+                                      transform: 'translateY(-2px)',
+                                    }
+                                  }}
+                                />
+                              </Tooltip>
+                              <Tooltip title="Bugs and defects">
+                                <Chip
+                                  size="small"
+                                  avatar={<Avatar sx={{ bgcolor: '#f44336' }}>D</Avatar>}
+                                  label="Defect"
+                                  sx={{ 
+                                    bgcolor: 'rgba(244, 67, 54, 0.1)', 
+                                    color: '#f44336',
+                                    transition: 'all 0.2s ease',
+                                    '&:hover': {
+                                      bgcolor: 'rgba(244, 67, 54, 0.18)',
+                                      transform: 'translateY(-2px)',
+                                    }
+                                  }}
+                                />
+                              </Tooltip>
+                              <Tooltip title="Other issue types">
+                                <Chip
+                                  size="small"
+                                  avatar={<Avatar sx={{ bgcolor: '#9e9e9e' }}>O</Avatar>}
+                                  label="Other"
+                                  sx={{ 
+                                    bgcolor: 'rgba(158, 158, 158, 0.1)', 
+                                    color: '#9e9e9e',
+                                    transition: 'all 0.2s ease',
+                                    '&:hover': {
+                                      bgcolor: 'rgba(158, 158, 158, 0.18)',
+                                      transform: 'translateY(-2px)',
+                                    }
+                                  }}
+                                />
+                              </Tooltip>
+                            </Box>
+                          </Box>
                         
-                        <Box sx={{ mt: 2 }}>
-                          <Typography variant="subtitle2" color="text.secondary">
-                            Connections
+                          {/* Edge Types Section */}
+                          <Typography variant="subtitle2" sx={{ 
+                            fontWeight: 600, 
+                            mb: 1.5, 
+                            color: '#3f51b5',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 1,
+                            borderBottom: '1px solid rgba(0,0,0,0.06)',
+                            pb: 1
+                          }}>
+                            <SwapHorizIcon fontSize="small" />
+                            Connection Types
                           </Typography>
-                          <Box sx={{ mt: 1 }}>
-                            {edges.filter(edge => edge.source === selectedNode.id || edge.target === selectedNode.id)
-                              .map((edge) => {
-                                const isSource = edge.source === selectedNode.id;
-                                const connectedNodeId = isSource ? edge.target : edge.source;
-                                const connectedNode = nodes.find(n => n.id === connectedNodeId);
-                                
-                                if (!connectedNode) return null;
-                                
-                                return (
-                                  <Chip
-                                    key={edge.id}
-                                    size="small"
-                                    label={`${connectedNode.data.key} (${isSource ? 'Outgoing' : 'Incoming'})`}
-                                    sx={{ mb: 0.5, mr: 0.5 }}
-                                  />
-                                );
-                              })
+                          
+                          <Box sx={{ 
+                            display: 'grid', 
+                            gridTemplateColumns: '1fr',
+                            gap: 1.2,
+                            '& .connection-item': {
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 1.5,
+                              p: 1,
+                              borderRadius: 1.5,
+                              transition: 'all 0.2s ease',
+                              bgcolor: 'rgba(0,0,0,0.01)',
+                              border: '1px solid rgba(0,0,0,0.03)',
+                              '&:hover': { 
+                                bgcolor: 'rgba(0,0,0,0.03)',
+                                transform: 'translateX(3px)'
+                              }
                             }
+                          }}>
+                            <Tooltip title="This issue blocks or depends on another issue">
+                              <Box className="connection-item">
+                                <Box sx={{ 
+                                  width: 40, 
+                                  height: 4, 
+                                  bgcolor: '#f44336', 
+                                  borderRadius: 1,
+                                  boxShadow: '0 0 5px rgba(244, 67, 54, 0.3)'
+                                }} />
+                                <Typography variant="body2" sx={{ fontWeight: 500 }}>Blocks/Depends</Typography>
+                              </Box>
+                            </Tooltip>
+                            <Tooltip title="This issue tests or verifies another issue">
+                              <Box className="connection-item">
+                                <Box sx={{ 
+                                  width: 40, 
+                                  height: 4, 
+                                  bgcolor: '#66bb6a', 
+                                  borderRadius: 1,
+                                  boxShadow: '0 0 5px rgba(102, 187, 106, 0.3)'
+                                }} />
+                                <Typography variant="body2" sx={{ fontWeight: 500 }}>Tests/Verifies</Typography>
+                              </Box>
+                            </Tooltip>
+                            <Tooltip title="This issue implements another issue">
+                              <Box className="connection-item">
+                                <Box sx={{ 
+                                  width: 40, 
+                                  height: 4, 
+                                  bgcolor: '#4dabf5', 
+                                  borderRadius: 1,
+                                  boxShadow: '0 0 5px rgba(77, 171, 245, 0.3)'
+                                }} />
+                                <Typography variant="body2" sx={{ fontWeight: 500 }}>Implements</Typography>
+                              </Box>
+                            </Tooltip>
+                            <Tooltip title="Other relationship types">
+                              <Box className="connection-item">
+                                <Box sx={{ 
+                                  width: 40, 
+                                  height: 4, 
+                                  bgcolor: '#555', 
+                                  borderRadius: 1,
+                                  boxShadow: '0 0 5px rgba(85, 85, 85, 0.3)'
+                                }} />
+                                <Typography variant="body2" sx={{ fontWeight: 500 }}>Other Relations</Typography>
+                              </Box>
+                            </Tooltip>
                           </Box>
                         </Box>
-                      </Box>
-                    </Box>
-                  )}
+                        )}
+                        </Paper>
+                      </Panel>
+                    </ReactFlow>
+                  </Box>
+                </Box>
                   
-                  {/* Description Tab */}
-                  {detailsTabValue === 1 && (
-                    <Box sx={{ p: 2 }}>
-                      <Typography variant="subtitle1" fontWeight="bold" color="primary" gutterBottom>
-                        {selectedNode.data.key} - Description
-                      </Typography>
-                      
-                      {issueDetails ? (
-                        <Box sx={{ 
-                          mt: 1, 
-                          p: 2, 
-                          maxHeight: '500px', 
-                          overflowY: 'auto',
-                          backgroundColor: '#f9f9f9',
-                          borderRadius: 1,
-                          whiteSpace: 'pre-wrap'
-                        }}>
-                          {/* Use our formatter to handle Atlassian Document Format if present */}
-                          {adfToText(issueDetails.description) || "No description available."}
-                        </Box>
-                      ) : (
-                        <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
-                          <CircularProgress size={30} />
-                        </Box>
-                      )}
-                      
-                      <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
-                        <Button 
-                          variant="outlined" 
-                          color="primary" 
-                          size="small"
-                          onClick={() => {
-                            if (issueDetails && issueDetails.description) {
-                              // Save JSON data to session storage for LLM processing
-                              const llmData = {
-                                issue: selectedNode.data.key,
-                                summary: selectedNode.data.summary,
-                                description: adfToText(issueDetails.description)
-                              };
-                              sessionStorage.setItem('jiraLLMData', JSON.stringify(llmData));
-                              alert('Issue description saved for LLM processing');
-                            }
-                          }}
-                        >
-                          Save Description for LLM
-                        </Button>
-                        
-                        <Button 
-                          variant="contained" 
-                          color="primary" 
-                          size="small"
-                          onClick={() => {
-                            const formatted = sessionStorage.getItem('jiraLLMFormatted');
-                            if (formatted) {
-                              navigator.clipboard.writeText(formatted);
-                              alert('Formatted JIRA data copied to clipboard for LLM input');
-                            }
-                          }}
-                        >
-                          Copy for LLM Input
-                        </Button>
-                      </Stack>
-                    </Box>
-                  )}
-                  
-                  {/* JSON Tab for LLM processing */}
-                  {detailsTabValue === 2 && (
-                    <Box sx={{ p: 2 }}>
-                      <Typography variant="subtitle2" color="text.secondary" gutterBottom>
-                        JSON Data for LLM Processing
-                      </Typography>
-                      
-                      <Box sx={{ 
-                        mt: 1, 
-                        p: 2, 
-                        maxHeight: '500px', 
-                        overflowY: 'auto',
-                        backgroundColor: '#f5f5f5',
-                        borderRadius: 1,
-                        fontFamily: 'monospace',
-                        fontSize: '12px',
-                        whiteSpace: 'pre-wrap'
-                      }}>
-                        {detailsJson || "Loading JSON data..."}
-                      </Box>
-                      
-                      <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
-                        <Button
-                          variant="outlined"
-                          color="primary"
-                          size="small"
-                          onClick={() => {
-                            if (detailsJson) {
-                              sessionStorage.setItem('jiraDetailedJson', detailsJson);
-                              alert('JSON data saved for LLM processing');
-                            }
-                          }}
-                        >
-                          Save JSON to Session
-                        </Button>
-                        
-                        <Button
-                          variant="contained"
-                          color="primary"
-                          size="small"
-                          onClick={() => {
-                            if (detailsJson) {
-                              // Create downloadable JSON file
-                              const blob = new Blob([detailsJson], { type: 'application/json' });
-                              const url = URL.createObjectURL(blob);
-                              const link = document.createElement('a');
-                              link.href = url;
-                              link.download = `${selectedNode.data.key}_for_llm.json`;
-                              document.body.appendChild(link);
-                              link.click();
-                              document.body.removeChild(link);
-                              URL.revokeObjectURL(url);
-                            }
-                          }}
-                        >
-                          Download as JSON
-                        </Button>
-                      </Stack>
-                    </Box>
-                  )}
-                  
-                  {/* Test Case Tab */}
-                  {showCreateTestCase && detailsTabValue === 3 && (
-                    <Box sx={{ p: 2 }}>
-                      <Typography variant="subtitle1" fontWeight="bold" color="primary" gutterBottom>
-                        Generated Test Case for {selectedNode.data.key}
-                      </Typography>
-                      
-                      {isGeneratingTestCase ? (
-                        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', p: 4 }}>
-                          <CircularProgress size={40} />
-                          <Typography variant="body1" sx={{ mt: 2 }}>
-                            Generating test case using AI...
-                          </Typography>
-                          <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
-                            This may take a few moments
-                          </Typography>
-                        </Box>
-                      ) : generatedTestCase ? (
-                        <Box>
-                          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-                            <Typography variant="h6">Test Case for {selectedNode?.data?.key}</Typography>
-                            <Box>
-                              <Stack direction="row" spacing={1}>
-                                <Button 
-                                  variant="outlined" 
-                                  startIcon={<FileCopyIcon />}
+                  {/* Node Details Sidebar - Modern UI */}
+                  {selectedNode && (
+                    <Paper 
+                      elevation={6} 
+                      sx={{ 
+                        width: sidebarMinimized ? 50 : 380, 
+                        borderLeft: '2px solid #3f51b5',
+                        borderRadius: '0 8px 8px 0',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflowY: sidebarMinimized ? 'visible' : 'auto',
+                        overflowX: 'hidden',
+                        height: '100%',
+                        transition: 'all 0.3s ease',
+                        animation: 'slideInRight 0.3s',
+                        '@keyframes slideInRight': {
+                          from: { transform: 'translateX(50px)', opacity: 0 },
+                          to: { transform: 'translateX(0)', opacity: 1 }
+                        }
+                      }}
+                    >
+                          <Box sx={{ 
+                            p: sidebarMinimized ? 1 : 2.5, 
+                            background: 'linear-gradient(135deg, #3f51b5 0%, #5c6bc0 100%)',
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            color: 'white',
+                            borderRadius: '0 8px 0 0',
+                            minHeight: 56
+                          }}>
+                            {!sidebarMinimized ? (
+                              <>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                  <Typography 
+                                    variant="subtitle1" 
+                                    sx={{ 
+                                      fontWeight: 'bold',
+                                      fontSize: '1rem',
+                                      lineHeight: 1.4,
+                                      margin: 0,
+                                      padding: 0
+                                    }}
+                                  >
+                                    Issue Details
+                                  </Typography>
+                                  {selectedNode.data.key && (
+                                    <Chip 
+                                      label={selectedNode.data.key} 
+                                      size="small" 
+                                      sx={{ 
+                                        backgroundColor: 'rgba(255, 255, 255, 0.3)',
+                                        color: 'white',
+                                        fontWeight: 'bold'
+                                      }} 
+                                    />
+                                  )}
+                                </Box>
+                                <Box sx={{ display: 'flex', gap: 0.5 }}>
+                                  <Tooltip title="Minimize panel">
+                                    <IconButton 
+                                      size="small" 
+                                      onClick={() => setSidebarMinimized(true)} 
+                                      sx={{ color: 'white' }}
+                                    >
+                                      <KeyboardArrowRightIcon fontSize="small" />
+                                    </IconButton>
+                                  </Tooltip>
+                                  <Tooltip title="Close details">
+                                    <IconButton size="small" onClick={clearSelectedNode} sx={{ color: 'white' }}>
+                                      <RestartAltIcon fontSize="small" />
+                                    </IconButton>
+                                  </Tooltip>
+                                </Box>
+                              </>
+                            ) : (
+                              <Box sx={{ 
+                                display: 'flex', 
+                                flexDirection: 'column', 
+                                alignItems: 'center',
+                                width: '100%',
+                                gap: 1
+                              }}>
+                                <Tooltip title="Expand panel" placement="left">
+                                  <IconButton 
+                                    size="small" 
+                                    onClick={() => setSidebarMinimized(false)} 
+                                    sx={{ color: 'white' }}
+                                  >
+                                    <KeyboardArrowLeftIcon fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
+                                <Tooltip title="Close details" placement="left">
+                                  <IconButton 
+                                    size="small" 
+                                    onClick={clearSelectedNode} 
+                                    sx={{ color: 'white' }}
+                                  >
+                                    <CloseIcon fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
+                              </Box>
+                            )}
+                          </Box>
+                          
+                          {/* Modern Issue Details Tabs */}
+                          <Box sx={{ borderBottom: 0, pt: 0.5, display: sidebarMinimized ? 'none' : 'block' }}>
+                            <Tabs 
+                              value={detailsTabValue} 
+                              onChange={(e, newValue) => setDetailsTabValue(newValue)} 
+                              variant="scrollable"
+                              scrollButtons="auto"
+                              TabIndicatorProps={{ 
+                                style: { backgroundColor: '#5c6bc0', height: 3 } 
+                              }}
+                              sx={{
+                                '& .MuiTab-root': {
+                                  minWidth: 'auto',
+                                  fontWeight: 'medium',
+                                  textTransform: 'none',
+                                  fontSize: '0.9rem',
+                                  px: 2
+                                },
+                                '& .Mui-selected': {
+                                  color: '#3f51b5',
+                                  fontWeight: 'bold'
+                                }
+                              }}
+                            >
+                              <Tab icon={<InfoIcon fontSize="small" />} iconPosition="start" label="Overview" />
+                              <Tab icon={<DescriptionIcon fontSize="small" />} iconPosition="start" label="Details" />
+                              <Tab icon={<CodeIcon fontSize="small" />} iconPosition="start" label="JSON" />
+                              {showCreateTestCase && <Tab icon={<CheckCircleIcon fontSize="small" />} iconPosition="start" label="Test Case" />}
+                            </Tabs>
+                          </Box>
+                          
+                          {isLoadingDetails && !sidebarMinimized && (
+                            <LinearProgress color="secondary" sx={{ height: 3, bgcolor: 'rgba(92, 107, 192, 0.1)' }} />
+                          )}
+                          
+                          {/* Tab content - only shown when not minimized */}
+                          <Box sx={{ display: sidebarMinimized ? 'none' : 'block' }}>
+                            {/* Enhanced Overview Tab */}
+                          {detailsTabValue === 0 && (
+                            <Box sx={{ p: 3 }}>
+                              <Typography 
+                                variant="h6" 
+                                sx={{ 
+                                  fontWeight: 600, 
+                                  mb: 2,
+                                  lineHeight: 1.3,
+                                  color: '#111827',
+                                  position: 'relative',
+                                  pl: 0.5,
+                                  '&::before': {
+                                    content: '""',
+                                    position: 'absolute',
+                                    left: -8,
+                                    top: 2,
+                                    bottom: 2,
+                                    width: 4,
+                                    borderRadius: 4,
+                                    backgroundColor: '#5c6bc0'
+                                  }
+                                }}
+                              >
+                                {selectedNode.data.summary}
+                              </Typography>
+                              
+                              <Box sx={{ 
+                                display: 'flex', 
+                                gap: 1, 
+                                mb: 3,
+                                flexWrap: 'wrap'
+                              }}>
+                                {/* Issue Type Chip */}
+                                <Chip
+                                  icon={
+                                    selectedNode.data.issue_type?.toLowerCase().includes('bug') ? <BugReportIcon /> :
+                                    selectedNode.data.issue_type?.toLowerCase().includes('test') ? <CheckCircleOutlineIcon /> :
+                                    selectedNode.data.issue_type?.toLowerCase().includes('requirement') ? <AssignmentIcon /> :
+                                    <FlagIcon />
+                                  }
+                                  label={selectedNode.data.issue_type || "Unknown"}
                                   size="small"
-                                  onClick={() => {
-                                    // Create formatted text for clipboard
-                                    const testCaseText = `Summary: ${generatedTestCase.summary}\n\n` +
-                                      `Description: ${generatedTestCase.description}\n\n` +
-                                      `Precondition: ${generatedTestCase.precondition}\n\n` +
-                                      `Type: ${generatedTestCase.type}\n` +
-                                      `Priority: ${generatedTestCase.priority}\n\n` +
-                                      `Steps:\n` +
-                                      generatedTestCase.steps.map((step, i) => 
-                                        `${i+1}. ${step.step}\n   Expected: ${step.expected}` +
-                                        (step.data ? `\n   Data: ${step.data}` : '')
-                                      ).join('\n\n');
-                                  
-                                    navigator.clipboard.writeText(testCaseText);
-                                    alert("Test case copied to clipboard!");
+                                  sx={{
+                                    bgcolor: 
+                                      selectedNode.data.issue_type?.toLowerCase().includes('bug') ? 'rgba(244, 67, 54, 0.1)' :
+                                      selectedNode.data.issue_type?.toLowerCase().includes('test') ? 'rgba(102, 187, 106, 0.1)' :
+                                      selectedNode.data.issue_type?.toLowerCase().includes('requirement') ? 'rgba(77, 171, 245, 0.1)' :
+                                      'rgba(156, 39, 176, 0.1)',
+                                    color: 
+                                      selectedNode.data.issue_type?.toLowerCase().includes('bug') ? '#f44336' :
+                                      selectedNode.data.issue_type?.toLowerCase().includes('test') ? '#66bb6a' :
+                                      selectedNode.data.issue_type?.toLowerCase().includes('requirement') ? '#4dabf5' :
+                                      '#9c27b0',
+                                    fontWeight: 500,
+                                    border: '1px solid',
+                                    borderColor: 
+                                      selectedNode.data.issue_type?.toLowerCase().includes('bug') ? 'rgba(244, 67, 54, 0.2)' :
+                                      selectedNode.data.issue_type?.toLowerCase().includes('test') ? 'rgba(102, 187, 106, 0.2)' :
+                                      selectedNode.data.issue_type?.toLowerCase().includes('requirement') ? 'rgba(77, 171, 245, 0.2)' :
+                                      'rgba(156, 39, 176, 0.2)',
                                   }}
-                                >
-                                  Copy to Clipboard
-                                </Button>
-                                <Button 
-                                  variant="contained" 
+                                />
+                                
+                                {/* Status Chip */}
+                                <Chip
+                                  label={selectedNode.data.status || "No Status"}
+                                  size="small"
+                                  sx={{
+                                    bgcolor: 
+                                      selectedNode.data.status?.toLowerCase().includes('done') || 
+                                      selectedNode.data.status?.toLowerCase().includes('closed') ? 'rgba(102, 187, 106, 0.1)' :
+                                      selectedNode.data.status?.toLowerCase().includes('progress') ? 'rgba(255, 152, 0, 0.1)' :
+                                      selectedNode.data.status?.toLowerCase().includes('open') || 
+                                      selectedNode.data.status?.toLowerCase().includes('todo') ? 'rgba(77, 171, 245, 0.1)' :
+                                      'rgba(189, 189, 189, 0.1)',
+                                    color: 
+                                      selectedNode.data.status?.toLowerCase().includes('done') || 
+                                      selectedNode.data.status?.toLowerCase().includes('closed') ? '#66bb6a' :
+                                      selectedNode.data.status?.toLowerCase().includes('progress') ? '#ff9800' :
+                                      selectedNode.data.status?.toLowerCase().includes('open') || 
+                                      selectedNode.data.status?.toLowerCase().includes('todo') ? '#4dabf5' :
+                                      '#757575',
+                                    fontWeight: 500,
+                                    border: '1px solid',
+                                    borderColor: 
+                                      selectedNode.data.status?.toLowerCase().includes('done') || 
+                                      selectedNode.data.status?.toLowerCase().includes('closed') ? 'rgba(102, 187, 106, 0.2)' :
+                                      selectedNode.data.status?.toLowerCase().includes('progress') ? 'rgba(255, 152, 0, 0.2)' :
+                                      selectedNode.data.status?.toLowerCase().includes('open') || 
+                                      selectedNode.data.status?.toLowerCase().includes('todo') ? 'rgba(77, 171, 245, 0.2)' :
+                                      'rgba(189, 189, 189, 0.2)',
+                                  }}
+                                />
+                                
+                                {/* Priority chip if available */}
+                                {selectedNode.data.priority && (
+                                  <Chip
+                                    icon={
+                                      selectedNode.data.priority.toLowerCase().includes('high') || 
+                                      selectedNode.data.priority.toLowerCase().includes('critical') ? 
+                                        <PriorityHighIcon fontSize="small" /> : 
+                                      selectedNode.data.priority.toLowerCase().includes('low') ? 
+                                        <LowPriorityIcon fontSize="small" /> :
+                                        <FlagIcon fontSize="small" />
+                                    }
+                                    label={selectedNode.data.priority}
+                                    size="small"
+                                    sx={{
+                                      bgcolor: 
+                                        selectedNode.data.priority.toLowerCase().includes('high') || 
+                                        selectedNode.data.priority.toLowerCase().includes('critical') ? 
+                                          'rgba(244, 67, 54, 0.08)' : 
+                                        selectedNode.data.priority.toLowerCase().includes('low') ? 
+                                          'rgba(76, 175, 80, 0.08)' :
+                                          'rgba(255, 152, 0, 0.08)',
+                                      color: 
+                                        selectedNode.data.priority.toLowerCase().includes('high') || 
+                                        selectedNode.data.priority.toLowerCase().includes('critical') ? 
+                                          '#f44336' : 
+                                        selectedNode.data.priority.toLowerCase().includes('low') ? 
+                                          '#4caf50' :
+                                          '#ff9800',
+                                      fontWeight: 500,
+                                      border: '1px solid',
+                                      borderColor: 
+                                        selectedNode.data.priority.toLowerCase().includes('high') || 
+                                        selectedNode.data.priority.toLowerCase().includes('critical') ? 
+                                          'rgba(244, 67, 54, 0.2)' : 
+                                        selectedNode.data.priority.toLowerCase().includes('low') ? 
+                                          'rgba(76, 175, 80, 0.2)' :
+                                          'rgba(255, 152, 0, 0.2)',
+                                    }}
+                                  />
+                                )}
+                              </Box>
+                              
+                              {/* Issue details in cards with shadow and hover effects */}
+                              <Grid container spacing={2}>
+                                {/* Key Information Card */}
+                                <Grid item xs={12}>
+                                  <Card variant="outlined" sx={{ 
+                                    borderRadius: 2,
+                                    transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+                                    '&:hover': {
+                                      boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+                                    },
+                                    border: '1px solid rgba(0,0,0,0.08)'
+                                  }}>
+                                    <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                                      <Grid container spacing={2}>
+                                        {/* Key info */}
+                                        <Grid item xs={6}>
+                                          <Typography variant="caption" color="text.secondary" gutterBottom component="div" sx={{ 
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 0.5
+                                          }}>
+                                            <KeyIcon fontSize="inherit" />
+                                            Key
+                                          </Typography>
+                                          <Typography variant="body2" fontWeight={500}>
+                                            {selectedNode.data.key || "N/A"}
+                                          </Typography>
+                                        </Grid>
+
+                                        {/* Assignee */}
+                                        <Grid item xs={6}>
+                                          <Typography variant="caption" color="text.secondary" gutterBottom component="div" sx={{ 
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 0.5
+                                          }}>
+                                            <PersonOutlineIcon fontSize="inherit" />
+                                            Assignee
+                                          </Typography>
+                                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                            <Avatar 
+                                              src={selectedNode.data.assignee_avatar} 
+                                              alt={selectedNode.data.assignee || "Unassigned"}
+                                              sx={{ width: 22, height: 22 }}
+                                            />
+                                            <Typography variant="body2">
+                                              {selectedNode.data.assignee || "Unassigned"}
+                                            </Typography>
+                                          </Box>
+                                        </Grid>
+                                        
+                                        {/* Reporter */}
+                                        <Grid item xs={6}>
+                                          <Typography variant="caption" color="text.secondary" gutterBottom component="div" sx={{ 
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 0.5
+                                          }}>
+                                            <RecordVoiceOverIcon fontSize="inherit" />
+                                            Reporter
+                                          </Typography>
+                                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                            <Avatar 
+                                              src={selectedNode.data.reporter_avatar} 
+                                              alt={selectedNode.data.reporter || "Unknown"}
+                                              sx={{ width: 22, height: 22 }}
+                                            />
+                                            <Typography variant="body2">
+                                              {selectedNode.data.reporter || "Unknown"}
+                                            </Typography>
+                                          </Box>
+                                        </Grid>
+
+                                        {/* Created date */}
+                                        <Grid item xs={6}>
+                                          <Typography variant="caption" color="text.secondary" gutterBottom component="div" sx={{ 
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: 0.5
+                                          }}>
+                                            <CalendarTodayIcon fontSize="inherit" />
+                                            Created
+                                          </Typography>
+                                          <Typography variant="body2">
+                                            {selectedNode.data.created ? new Date(selectedNode.data.created).toLocaleDateString() : "Unknown"}
+                                          </Typography>
+                                        </Grid>
+                                      </Grid>
+                                    </CardContent>
+                                  </Card>
+                                </Grid>
+                                
+                                {/* Related Issues Card */}
+                                {selectedNode.data.connected_issues && selectedNode.data.connected_issues.length > 0 && (
+                                  <Grid item xs={12}>
+                                    <Card variant="outlined" sx={{ 
+                                      borderRadius: 2,
+                                      transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+                                      '&:hover': {
+                                        boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+                                      },
+                                      border: '1px solid rgba(0,0,0,0.08)'
+                                    }}>
+                                      <CardHeader
+                                        title={
+                                          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                                            Related Issues
+                                          </Typography>
+                                        }
+                                        avatar={<LinkIcon color="primary" />}
+                                        sx={{ py: 1.5, px: 2 }}
+                                      />
+                                      <Divider />
+                                      <CardContent sx={{ p: 0 }}>
+                                        <List dense disablePadding>
+                                          {selectedNode.data.connected_issues.slice(0, 5).map((issue, index) => (
+                                            <ListItem 
+                                              key={index} 
+                                              disablePadding 
+                                              divider={index < selectedNode.data.connected_issues.slice(0, 5).length - 1}
+                                            >
+                                              <ListItemButton 
+                                                onClick={() => {
+                                                  const node = nodes.find(n => n.data.key === issue.key);
+                                                  if (node) {
+                                                    setSelectedNode(node);
+                                                    loadIssueDetails(node.data.key);
+                                                  }
+                                                }}
+                                                sx={{ 
+                                                  py: 1,
+                                                  transition: 'all 0.2s ease',
+                                                  '&:hover': {
+                                                    backgroundColor: 'rgba(63, 81, 181, 0.08)'
+                                                  }
+                                                }}
+                                              >
+                                                <ListItemIcon sx={{ minWidth: 'auto', mr: 1, color: 'primary.main' }}>
+                                                  {issue.relationship_type?.toLowerCase().includes('blocks') ? (
+                                                    <BlockIcon fontSize="small" sx={{ color: '#f44336' }} />
+                                                  ) : issue.relationship_type?.toLowerCase().includes('test') ? (
+                                                    <CheckCircleOutlineIcon fontSize="small" sx={{ color: '#66bb6a' }} />
+                                                  ) : issue.relationship_type?.toLowerCase().includes('implements') ? (
+                                                    <CodeIcon fontSize="small" sx={{ color: '#4dabf5' }} />
+                                                  ) : (
+                                                    <ArrowRightAltIcon fontSize="small" />
+                                                  )}
+                                                </ListItemIcon>
+                                                <ListItemText 
+                                                  primary={
+                                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                                      <Typography variant="body2" fontWeight={500}>
+                                                        {issue.key}
+                                                      </Typography>
+                                                      <Typography 
+                                                        variant="body2" 
+                                                        sx={{ 
+                                                          maxWidth: '200px',
+                                                          whiteSpace: 'nowrap',
+                                                          overflow: 'hidden',
+                                                          textOverflow: 'ellipsis',
+                                                          color: 'text.secondary',
+                                                          fontSize: '0.8rem'
+                                                        }}
+                                                      >
+                                                        - {issue.summary || ""}
+                                                      </Typography>
+                                                    </Box>
+                                                  }
+                                                  secondary={
+                                                    <Typography 
+                                                      variant="caption" 
+                                                      sx={{ color: 'text.secondary', display: 'block', fontSize: '0.75rem' }}
+                                                    >
+                                                      {issue.relationship_type || "Related"}
+                                                    </Typography>
+                                                  }
+                                                />
+                                              </ListItemButton>
+                                            </ListItem>
+                                          ))}
+                                        </List>
+                                        
+                                        {/* Show more link if more than 5 related issues */}
+                                        {selectedNode.data.connected_issues.length > 5 && (
+                                          <Box sx={{ p: 1, textAlign: 'center' }}>
+                                            <Button 
+                                              size="small" 
+                                              sx={{ fontSize: '0.75rem' }}
+                                              endIcon={<ExpandMoreIcon />}
+                                              onClick={() => setDetailsTabValue(2)} // Switch to the JSON tab which has all data
+                                            >
+                                              Show {selectedNode.data.connected_issues.length - 5} more
+                                            </Button>
+                                          </Box>
+                                        )}
+                                      </CardContent>
+                                    </Card>
+                                  </Grid>
+                                )}
+                              </Grid>
+                              
+                              <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
+                                <Button
+                                  variant="contained"
                                   color="primary"
-                                  startIcon={<SaveAltIcon />}
-                                  size="small"
-                                  onClick={() => {
-                                    downloadTestCaseAsCSV(generatedTestCase);
+                                  startIcon={<OpenInNewIcon />}
+                                  onClick={() => window.open(`${jiraBaseUrl}/browse/${selectedNode.data.key}`, '_blank')}
+                                  sx={{
+                                    textTransform: 'none',
+                                    borderRadius: 1.5
                                   }}
                                 >
-                                  Download as CSV
+                                  Open in JIRA
+                                </Button>
+                              </Box>
+                            </Box>
+                          )}
+                          
+                          {/* Description Tab - Enhanced UI */}
+                          {detailsTabValue === 1 && (
+                            <Box sx={{ p: 2.5 }}>
+                              <Box sx={{ 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                gap: 1,
+                                mb: 2 
+                              }}>
+                                <DescriptionIcon color="primary" />
+                                <Typography variant="h6" color="primary" sx={{ fontWeight: 600 }}>
+                                  {selectedNode.data.key} - Description
+                                </Typography>
+                              </Box>
+                              
+                              {issueDetails ? (
+                                <Box sx={{ 
+                                  position: 'relative',
+                                  mt: 1,
+                                  borderRadius: 2,
+                                  boxShadow: '0 2px 8px rgba(0,0,0,0.05)',
+                                  overflow: 'hidden'
+                                }}>
+                                  <Box sx={{
+                                    maxHeight: '60vh',
+                                    overflowY: 'auto',
+                                    p: 2.5,
+                                    bgcolor: '#fcfcfc',
+                                    borderRadius: 2,
+                                    border: '1px solid rgba(0,0,0,0.07)',
+                                    fontFamily: '"Roboto", "Helvetica", "Arial", sans-serif',
+                                    fontSize: '0.95rem',
+                                    lineHeight: 1.6,
+                                    whiteSpace: 'pre-wrap',
+                                    '& p': { mb: 1.5 },
+                                    '& pre': { 
+                                      backgroundColor: '#f5f5f5', 
+                                      p: 1.5,
+                                      borderRadius: 1,
+                                      overflowX: 'auto',
+                                      fontSize: '0.9rem',
+                                      fontFamily: '"Consolas", "Monaco", monospace'
+                                    },
+                                    '& ul, & ol': {
+                                      pl: 2.5,
+                                      mb: 1.5
+                                    },
+                                    '& blockquote': {
+                                      borderLeft: '4px solid #e0e0e0',
+                                      pl: 2,
+                                      opacity: 0.8
+                                    },
+                                    '& a': {
+                                      color: '#3f51b5',
+                                      textDecoration: 'none',
+                                      '&:hover': {
+                                        textDecoration: 'underline'
+                                      }
+                                    },
+                                    '& h1, & h2, & h3, & h4, & h5, & h6': {
+                                      color: '#333',
+                                      fontWeight: 600,
+                                      mb: 1.5,
+                                      mt: 2.5
+                                    },
+                                    '& table': {
+                                      borderCollapse: 'collapse',
+                                      width: '100%',
+                                      mb: 2,
+                                      '& th, & td': {
+                                        border: '1px solid #e0e0e0',
+                                        p: 1,
+                                        textAlign: 'left'
+                                      },
+                                      '& th': {
+                                        backgroundColor: '#f7f7f7'
+                                      }
+                                    },
+                                    '& hr': {
+                                      height: '1px',
+                                      backgroundColor: '#e0e0e0',
+                                      border: 'none',
+                                      my: 2.5
+                                    },
+                                    '& img': {
+                                      maxWidth: '100%',
+                                      height: 'auto',
+                                      display: 'block',
+                                      my: 2,
+                                      borderRadius: 1
+                                    }
+                                  }}>
+                                    {/* Use our formatter to handle Atlassian Document Format if present */}
+                                    {adfToText(issueDetails.description) || 
+                                      <Typography 
+                                        variant="body2" 
+                                        sx={{ color: 'text.secondary', fontStyle: 'italic', p: 1 }}
+                                      >
+                                        No description available for this issue.
+                                      </Typography>
+                                    }
+                                  </Box>
+                                </Box>
+                              ) : (
+                                <Box sx={{ display: 'flex', justifyContent: 'center', p: 4 }}>
+                                  <CircularProgress size={28} thickness={4} />
+                                </Box>
+                              )}
+                              
+                              <Stack 
+                                direction="row" 
+                                spacing={2} 
+                                sx={{ 
+                                  mt: 3,
+                                  justifyContent: 'flex-end'
+                                }}
+                              >
+                                {issueDetails && issueDetails.description && (
+                                  <Button 
+                                    variant="outlined" 
+                                    color="primary" 
+                                    size="small"
+                                    startIcon={<SaveAltIcon />}
+                                    onClick={() => {
+                                      if (issueDetails && issueDetails.description) {
+                                        // Save JSON data to session storage for LLM processing
+                                        const llmData = {
+                                          issue: selectedNode.data.key,
+                                          summary: selectedNode.data.summary,
+                                          description: adfToText(issueDetails.description)
+                                        };
+                                        sessionStorage.setItem('jiraLLMData', JSON.stringify(llmData));
+                                        alert('Issue description saved for LLM processing');
+                                      }
+                                    }}
+                                    sx={{
+                                      textTransform: 'none',
+                                      borderRadius: 1.5,
+                                      px: 2
+                                    }}
+                                  >
+                                    Save for LLM
+                                  </Button>
+                                )}
+                                
+                                <Button
+                                  variant="contained"
+                                  color="primary"
+                                  size="small"
+                                  startIcon={<OpenInNewIcon />}
+                                  onClick={() => window.open(`${jiraBaseUrl}/browse/${selectedNode.data.key}`, '_blank')}
+                                  sx={{
+                                    textTransform: 'none',
+                                    borderRadius: 1.5,
+                                    px: 2
+                                  }}
+                                >
+                                  Open in JIRA
                                 </Button>
                               </Stack>
                             </Box>
-                          </Box>
+                          )}
                           
-                          <Box sx={{ 
-                            p: 2, 
-                            mb: 3, 
-                            border: '1px solid #e0e0e0', 
-                            borderRadius: 1,
-                            backgroundColor: '#f9f9f9'
-                          }}>
-                            <Typography variant="subtitle2" color="text.secondary">
-                              Test Summary
-                            </Typography>
-                            <Typography variant="body1" gutterBottom>
-                              {generatedTestCase.summary}
-                            </Typography>
-                            
-                            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 2 }}>
-                              Description
-                            </Typography>
-                            <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                              {generatedTestCase.description}
-                            </Typography>
-                            
-                            <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 2 }}>
-                              Precondition
-                            </Typography>
-                            <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                              {generatedTestCase.precondition}
-                            </Typography>
-                            
-                            <Grid container spacing={2} sx={{ mt: 1 }}>
-                              <Grid item xs={6}>
-                                <Typography variant="subtitle2" color="text.secondary">
-                                  Test Type
-                                </Typography>
-                                <Typography variant="body2">
-                                  {generatedTestCase.type}
-                                </Typography>
-                              </Grid>
-                              <Grid item xs={6}>
-                                <Typography variant="subtitle2" color="text.secondary">
-                                  Priority
-                                </Typography>
-                                <Typography variant="body2">
-                                  {generatedTestCase.priority}
-                                </Typography>
-                              </Grid>
-                            </Grid>
-                          </Box>
+                          {/* JSON Tab - Enhanced UI */}
+                          {detailsTabValue === 2 && (
+                            <Box sx={{ p: 2.5 }}>
+                              <Box sx={{ 
+                                display: 'flex', 
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                mb: 2 
+                              }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                  <CodeIcon color="primary" />
+                                  <Typography variant="h6" color="primary" sx={{ fontWeight: 600 }}>
+                                    {selectedNode.data.key} - JSON Data
+                                  </Typography>
+                                </Box>
+                                
+                                <Button
+                                  size="small"
+                                  variant="outlined"
+                                  startIcon={<ContentCopyIcon />}
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(JSON.stringify(selectedNode.data, null, 2));
+                                    // Show a short notification using Material-UI Snackbar or simple alert
+                                    alert('JSON data copied to clipboard');
+                                  }}
+                                  sx={{
+                                    textTransform: 'none',
+                                    borderRadius: 1.5
+                                  }}
+                                >
+                                  Copy JSON
+                                </Button>
+                              </Box>
+                              
+                              <Paper 
+                                variant="outlined"
+                                sx={{ 
+                                  borderRadius: 2, 
+                                  overflow: 'hidden',
+                                  border: '1px solid rgba(0, 0, 0, 0.08)',
+                                  boxShadow: 'inset 0 1px 4px rgba(0, 0, 0, 0.05)'
+                                }}
+                              >
+                                <Box 
+                                  sx={{
+                                    p: 0.5,
+                                    backgroundColor: '#f5f5f5',
+                                    borderBottom: '1px solid rgba(0, 0, 0, 0.08)',
+                                    display: 'flex',
+                                    alignItems: 'center'
+                                  }}
+                                >
+                                  <Box
+                                    sx={{
+                                      display: 'flex',
+                                      ml: 1.5,
+                                      gap: 0.8
+                                    }}
+                                  >
+                                    <Box sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: '#ff5f57' }} />
+                                    <Box sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: '#febc2e' }} />
+                                    <Box sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: '#28c840' }} />
+                                  </Box>
+                                  <Typography 
+                                    variant="caption" 
+                                    sx={{ 
+                                      ml: 2, 
+                                      color: 'text.secondary',
+                                      userSelect: 'none'
+                                    }}
+                                  >
+                                    JSON Viewer
+                                  </Typography>
+                                </Box>
+                                
+                                <Box 
+                                  sx={{
+                                    p: 2,
+                                    maxHeight: '60vh',
+                                    overflow: 'auto',
+                                    backgroundColor: '#fafafa',
+                                    fontSize: '0.85rem',
+                                    fontFamily: '"Consolas", "Monaco", monospace',
+                                    whiteSpace: 'pre-wrap',
+                                    '& .json-key': {
+                                      color: '#0451a5',
+                                      fontWeight: 'bold'
+                                    },
+                                    '& .json-value-string': {
+                                      color: '#a31515'
+                                    },
+                                    '& .json-value-number': {
+                                      color: '#098658'
+                                    },
+                                    '& .json-value-boolean': {
+                                      color: '#0000ff'
+                                    },
+                                    '& .json-value-null': {
+                                      color: '#767676'
+                                    }
+                                  }}
+                                >                              <div dangerouslySetInnerHTML={{ __html: formatJsonWithSyntaxHighlighting(selectedNode.data) }} />
+                            </Box>
+                              </Paper>
+                            </Box>
+                          )}
                           
-                          <Typography variant="subtitle1" gutterBottom>
-                            Test Steps
-                          </Typography>
-                          
-                          {generatedTestCase.steps.map((step, index) => (
-                            <Box 
-                              key={index}
-                              sx={{ 
-                                p: 2, 
-                                mb: 2, 
-                                border: '1px solid #e0e0e0', 
-                                borderRadius: 1
-                              }}
-                            >
-                              <Typography variant="subtitle2" gutterBottom>
-                                Step {index + 1}
+                          {/* Test Case Tab */}
+                          {showCreateTestCase && detailsTabValue === 3 && (
+                            <Box sx={{ p: 2 }}>
+                              <Typography variant="subtitle2" color="primary" sx={{ fontSize: '0.9rem' }} gutterBottom>
+                                Generated Test Case for {selectedNode.data.key}
                               </Typography>
                               
-                              <Box sx={{ ml: 2 }}>
-                                <Typography variant="body2" color="text.secondary">
-                                  Action
-                                </Typography>
-                                <Typography variant="body2" gutterBottom>
-                                  {step.step}
-                                </Typography>
-                                
-                                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                                  Expected Result
-                                </Typography>
-                                <Typography variant="body2" gutterBottom>
-                                  {step.expected}
-                                </Typography>
-                                
-                                {step.data && (
-                                  <>
-                                    <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                                      Test Data
+                              {isGeneratingTestCase ? (
+                                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', p: 4 }}>
+                                  <CircularProgress size={40} />
+                                  <Typography variant="body1" sx={{ mt: 2 }}>
+                                    Generating test case using AI...
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
+                                    This may take a few moments
+                                  </Typography>
+                                </Box>
+                              ) : generatedTestCase ? (
+                                <Box>
+                                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                                    <Typography variant="subtitle1" sx={{ fontSize: '0.95rem' }}>Test Case for {selectedNode?.data?.key}</Typography>
+                                    <Box>
+                                      <Stack direction="row" spacing={1}>
+                                        <Button 
+                                          variant="outlined" 
+                                          startIcon={<FileCopyIcon />}
+                                          size="small"
+                                          onClick={() => {
+                                            // Create formatted text for clipboard
+                                            const testCaseText = `Summary: ${generatedTestCase.summary}\n\n` +
+                                              `Description: ${generatedTestCase.description}\n\n` +
+                                              `Precondition: ${generatedTestCase.precondition}\n\n` +
+                                              `Type: ${generatedTestCase.type}\n` +
+                                              `Priority: ${generatedTestCase.priority}\n\n` +
+                                              `Steps:\n` +
+                                              generatedTestCase.steps.map((step, i) => 
+                                                `${i+1}. ${step.step}\n   Expected: ${step.expected}` +
+                                                (step.data ? `\n   Data: ${step.data}` : '')
+                                              ).join('\n\n');
+                                      
+                                            navigator.clipboard.writeText(testCaseText);
+                                            alert("Test case copied to clipboard!");
+                                          }}
+                                        >
+                                          Copy to Clipboard
+                                        </Button>
+                                        <Button 
+                                          variant="contained" 
+                                          color="primary"
+                                          startIcon={<SaveAltIcon />}
+                                          size="small"
+                                          onClick={() => {
+                                            downloadTestCaseAsCSV(generatedTestCase);
+                                          }}
+                                        >
+                                          Download as CSV
+                                        </Button>
+                                      </Stack>
+                                    </Box>
+                                  </Box>
+                                  
+                                  <Box sx={{ 
+                                    p: 2, 
+                                    mb: 3, 
+                                    border: '1px solid #e0e0e0', 
+                                    borderRadius: 1,
+                                    backgroundColor: '#f9f9f9'
+                                  }}>
+                                    <Typography variant="subtitle2" color="text.secondary">
+                                      Test Summary
                                     </Typography>
-                                    <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
-                                      {step.data}
+                                    <Typography variant="body1" gutterBottom>
+                                      {generatedTestCase.summary}
                                     </Typography>
-                                  </>
-                                )}
-                              </Box>
+                                    
+                                    <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 2 }}>
+                                      Description
+                                    </Typography>
+                                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                                      {generatedTestCase.description}
+                                    </Typography>
+                                    
+                                    <Typography variant="subtitle2" color="text.secondary" sx={{ mt: 2 }}>
+                                      Precondition
+                                    </Typography>
+                                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                                      {generatedTestCase.precondition}
+                                    </Typography>
+                                    
+                                    <Grid container spacing={2} sx={{ mt: 1 }}>
+                                      <Grid item xs={6}>
+                                        <Typography variant="subtitle2" color="text.secondary">
+                                          Test Type
+                                        </Typography>
+                                        <Typography variant="body2">
+                                          {generatedTestCase.type}
+                                        </Typography>
+                                      </Grid>
+                                      <Grid item xs={6}>
+                                        <Typography variant="subtitle2" color="text.secondary">
+                                          Priority
+                                        </Typography>
+                                        <Typography variant="body2">
+                                          {generatedTestCase.priority}
+                                        </Typography>
+                                      </Grid>
+                                    </Grid>
+                                  </Box>
+                                  
+                                  <Typography variant="subtitle1" gutterBottom>
+                                    Test Steps
+                                  </Typography>
+                                  
+                                  {generatedTestCase.steps.map((step, index) => (
+                                    <Box 
+                                      key={index}
+                                      sx={{ 
+                                        p: 2, 
+                                        mb: 2, 
+                                        border: '1px solid #e0e0e0', 
+                                        borderRadius: 1
+                                      }}
+                                    >
+                                      <Typography variant="subtitle2" gutterBottom>
+                                        Step {index + 1}
+                                      </Typography>
+                                      
+                                      <Box sx={{ ml: 2 }}>
+                                        <Typography variant="body2" color="text.secondary">
+                                          Action
+                                        </Typography>
+                                        <Typography variant="body2" gutterBottom>
+                                          {step.step}
+                                        </Typography>
+                                        
+                                        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                          Expected Result
+                                        </Typography>
+                                        <Typography variant="body2" gutterBottom>
+                                          {step.expected}
+                                        </Typography>
+                                        
+                                        {step.data && (
+                                          <>
+                                            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                                              Test Data
+                                            </Typography>
+                                            <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                                              {step.data}
+                                            </Typography>
+                                          </>
+                                        )}
+                                      </Box>
+                                    </Box>
+                                  ))}
+                                  
+                                  <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
+                                    <Button 
+                                      variant="contained" 
+                                      color="primary"
+                                      startIcon={<FileDownloadIcon />}
+                                      onClick={() => {
+                                        downloadTestCaseAsCSV(generatedTestCase);
+                                      }}
+                                    >
+                                      Download as CSV
+                                    </Button>
+                                    <Button 
+                                      variant="outlined" 
+                                      color="primary"
+                                      onClick={() => {
+                                        setShowCreateTestCase(false);
+                                        setGeneratedTestCase(null);
+                                        setDetailsTabValue(0); // Switch back to overview tab
+                                      }}
+                                    >
+                                      Discard
+                                    </Button>
+                                  </Stack>
+                                </Box>
+                              ) : (
+                                <Box sx={{ textAlign: 'center', p: 4 }}>
+                                  <Typography variant="body1">
+                                    No test case generated yet.
+                                  </Typography>
+                                  <Button 
+                                    variant="contained" 
+                                    color="primary"
+                                    sx={{ mt: 2 }}
+                                    onClick={handleCreateTestCase}
+                                  >
+                                    Generate Test Case
+                                  </Button>
+                                </Box>
+                              )}
                             </Box>
-                          ))}
-                          
-                          <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
-                            <Button 
-                              variant="contained" 
-                              color="primary"
-                              onClick={() => {
-                                // Here you would implement saving the test case to xray/jira
-                                alert('Test case would be saved to Xray/JIRA');
-                              }}
-                            >
-                              Save to Xray
-                            </Button>
-                            <Button 
-                              variant="outlined" 
-                              color="primary"
-                              onClick={() => {
-                                setShowCreateTestCase(false);
-                                setGeneratedTestCase(null);
-                                setDetailsTabValue(0); // Switch back to overview tab
-                              }}
-                            >
-                              Discard
-                            </Button>
-                          </Stack>
-                        </Box>
-                      ) : (
-                        <Box sx={{ textAlign: 'center', p: 4 }}>
-                          <Typography variant="body1">
-                            No test case generated yet.
-                          </Typography>
-                          <Button 
-                            variant="contained" 
-                            color="primary"
-                            sx={{ mt: 2 }}
-                            onClick={handleCreateTestCase}
-                          >
-                            Generate Test Case
-                          </Button>
-                        </Box>
-                      )}
-                    </Box>
-                  )}
-                </Paper>
-              )}
-            </Box>
+                          )}
+                          </Box> {/* Close the Box for tab content */}
+                    </Paper>
+                )}
+              </Box>
           </TabPanel>
           
           {/* Analytics Tab */}
@@ -2359,6 +3344,9 @@ const JiraVisualization = ({ data }) => {
                   </Card>
                 </Grid>
               </Grid>
+              
+              {/* JIRA Issue Type Summary */}
+              <JiraIssueTypeSummary nodes={data.nodes} />
             </Box>
           </TabPanel>
         </Paper>
@@ -2384,6 +3372,62 @@ const JiraVisualization = ({ data }) => {
   );
 };
 
+// JIRA Issue Type Summary component
+const JiraIssueTypeSummary = ({ nodes }) => {
+  // Count issues by type
+  const issueTypeCounts = nodes.reduce((counts, node) => {
+    if (!node || !node.data || !node.data.issue_type) return counts;
+    
+    const issueType = node.data.issue_type.toLowerCase();
+    counts[issueType] = (counts[issueType] || 0) + 1;
+    return counts;
+  }, {});
+
+  // Get total issues
+  const totalIssues = Object.values(issueTypeCounts).reduce((sum, count) => sum + count, 0);
+  
+  // Return null if no issues
+  if (totalIssues === 0) return null;
+  
+  // Get colors for issue types
+  const getIssueTypeColor = (type) => {
+    const typeKey = type.toLowerCase();
+    if (typeKey.includes('story')) return '#4dabf5';
+    if (typeKey.includes('task')) return '#6a0dad';
+    if (typeKey.includes('bug')) return '#f44336';
+    if (typeKey.includes('epic')) return '#ff9800';
+    if (typeKey.includes('test')) return '#66bb6a';
+    if (typeKey.includes('sub-task')) return '#2196f3';
+    return '#9e9e9e';
+  };
+  
+  return (
+    <Paper elevation={2} sx={{ p: 2, mb: 2 }}>
+      <Typography variant="h6" gutterBottom>
+        JIRA Issue Types ({totalIssues} total)
+      </Typography>
+      <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+        {Object.entries(issueTypeCounts).map(([issueType, count]) => (
+          <Chip
+            key={issueType}
+            label={`${issueType}: ${count}`}
+            sx={{
+              backgroundColor: getIssueTypeColor(issueType),
+              color: '#fff',
+              fontWeight: issueType.toLowerCase() === 'task' ? 'bold' : 'normal'
+            }}
+          />
+        ))}
+      </Box>
+      {issueTypeCounts.task && (
+        <Typography variant="body2" sx={{ mt: 1, color: '#6a0dad', fontWeight: 'bold' }}>
+          * {issueTypeCounts.task} task-type issues available for test case generation
+        </Typography>
+      )}
+    </Paper>
+  );
+};
+
 // Wrap the component with ReactFlowProvider to enable the useReactFlow hook
 const JiraVisualizationWithProvider = (props) => {
   return (
@@ -2394,3 +3438,39 @@ const JiraVisualizationWithProvider = (props) => {
 };
 
 export default JiraVisualizationWithProvider;
+
+// Function to format JSON with syntax highlighting for the JSON Tab
+  const formatJsonWithSyntaxHighlighting = (json) => {
+    if (!json) return '';
+    
+    const jsonStr = JSON.stringify(json, null, 2);
+    
+    // Escape HTML entities first to prevent XSS
+    const escaped = jsonStr
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+    
+    // Use regular expressions to add spans with appropriate classes for syntax highlighting
+    return escaped
+      .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?)/g, (match) => {
+        let cls = 'json-value-number';
+        
+        if (/^"/.test(match)) {
+          if (/:$/.test(match)) {
+            cls = 'json-key';
+            // For key:value pairs, style only the key part
+            return `<span class="${cls}">${match.substring(0, match.length - 1)}</span>:`;
+          } else {
+            cls = 'json-value-string';
+          }
+        } else if (/true|false/.test(match)) {
+          cls = 'json-value-boolean';
+        } else if (/null/.test(match)) {
+          cls = 'json-value-null';
+        }
+        
+        // Add the span with the appropriate class
+        return `<span class="${cls}">${match}</span>`;
+      });
+};
